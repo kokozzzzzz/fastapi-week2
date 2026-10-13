@@ -60,7 +60,7 @@ def create_user(user: UserCreate):
     "/users",
     response_model=list[UserResponse]
 )
-def get_user(
+def get_users(
     page: int = Query(default=1,ge=1,le=100,description="页码"),
     size: int = Query(default=10,ge=1,le=100,description="每页数量")
 ):
