@@ -1,16 +1,20 @@
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
     Path,
     Query,
 )
 
+from app.db.session import get_db
 from app.schemas.user import (
     UserCreate,
     UserUpdate,
     UserResponse,
 )
 from app.services import user_service
+
+from sqlalchemy.orm import Session
 
 router = APIRouter(
     prefix="/users",
@@ -23,8 +27,11 @@ router = APIRouter(
     response_model=UserResponse,
     status_code=201,
 )
-def create_user(user: UserCreate):
-    new_user = user_service.create_user(user)
+def create_user(
+    user: UserCreate,
+    db: Session =Depends(get_db)
+):
+    new_user = user_service.create_user(db,user)
 
     if new_user is None:
         raise HTTPException(status_code=400,detail="用户已存在")
@@ -48,8 +55,10 @@ def get_users(
         ge=1,
         le=100,
     ),
+    db: Session = Depends(get_db)
 ):
     return user_service.list_users(
+        db,
         page,
         size,
     )
@@ -60,8 +69,11 @@ def get_users(
     "/{user_id}",
     response_model=UserResponse,
 )
-def get_user(user_id: int):
-    user = user_service.find_user(user_id)
+def get_user(
+    user_id: int = Path(gt=0),
+    db: Session = Depends(get_db)
+):
+    user = user_service.find_user(db,user_id)
 
     if user is None:
         raise HTTPException(
@@ -79,9 +91,10 @@ def get_user(user_id: int):
 )
 def update_user(
     user_id: int = Path(gt=0),
-    data: UserUpdate = None
+    data: UserUpdate = None,
+    db: Session = Depends(get_db)
 ):
-    user = user_service.update_user(user_id,data)
+    user = user_service.update_user(db,user_id,data)
     if user is None:
         raise HTTPException(
             status_code=404,
@@ -95,9 +108,10 @@ def update_user(
     status_code = 204
 )
 def delete_user(
-    user_id: int = Path(gt=0)
+    user_id: int = Path(gt=0),
+    db: Session =Depends(get_db)
 ):
-    success = user_service.delete_user(user_id)
+    success = user_service.delete_user(db,user_id)
     if not success:
         raise HTTPException(status_code=404, detail="用户未找到")
     return None

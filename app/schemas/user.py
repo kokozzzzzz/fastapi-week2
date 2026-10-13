@@ -1,10 +1,11 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # 用户响应类
 class UserResponse(BaseModel):
     id: int
     name: str
     age: int
+    model_config = ConfigDict(from_attributes=True)
 
 # 用户创建类
 class UserCreate(BaseModel):

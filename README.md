@@ -35,6 +35,18 @@
 - **修正 Day 2 遗留问题**：删除接口的路径随 `prefix="/users"` 统一为 `/users/{user_id}`，不再是与其余接口不一致的 `/user/{user_id}`
 - **新增依赖**：`pydantic-settings`（配置管理用，`python-dotenv` 作为其依赖一并安装）
 
+### Day 4：数据库接入（SQLAlchemy + MySQL）
+- **新增数据库连接层**：`app/db/base.py` 用 SQLAlchemy 2.0 的 `DeclarativeBase` 定义声明基类 `Base`；`app/db/session.py` 用 `create_engine(setting.database_url)` 创建引擎，再通过 `sessionmaker(bind=engine, autoflush=False, autocommit=False)` 得到会话工厂 `SessionLocal`
+- **会话依赖注入**：`get_db()` 是生成器函数，`yield` 出数据库会话、在 `finally` 中 `db.close()`；路由函数用 `db: Session = Depends(get_db)` 声明，FastAPI 负责在请求结束时关闭会话
+- **ORM 模型**：`app/models/user.py` 用 `Mapped[...]` + `mapped_column()` 的注解写法定义 `User`，映射到 `users` 表——`id`（主键、自增）、`name`（`String(50)`、唯一、非空）、`age`（非空）
+- **自动建表**：`app/main.py` 中导入模型后执行 `Base.metadata.create_all(bind=engine)`，启动时自动创建缺失的表（只建新表，不会修改已存在的表结构）
+- **服务层改造**：`app/services/user_service.py` 由内存列表改为数据库操作，每个函数第一个参数是 `db: Session`——分页用 `db.query(User).offset(start).limit(size).all()`，查单个用 `filter(User.id == user_id).first()`，创建用 `db.add()` + `db.commit()` + `db.refresh()`（刷新后才能拿到自增 id），删除用 `db.delete()` + `db.commit()`
+- **重名校验**：新增 `find_user_by_name()` 在创建前查重，同时 `name` 字段带 `unique=True` 作为数据库层的兜底约束
+- **响应模型适配**：`UserResponse` 增加 `model_config = ConfigDict(from_attributes=True)`，Pydantic 才能直接从 ORM 对象（而不是 dict）读取属性
+- **配置新增**：`Settings` 增加 `database_url`、`github_token` 字段，`DATABASE_URL` 从 `.env` 读取，连接串格式为 `mysql+pymysql://用户名:密码@主机:端口/数据库名`
+- **补齐路径校验**：`GET /users/{user_id}` 的 `user_id` 补上 `Path(gt=0)`，与更新、删除接口保持一致
+- **新增依赖**：`SQLAlchemy`（ORM）、`PyMySQL`（MySQL 驱动）
+
 ## 项目结构
 
 ```text
@@ -49,23 +61,28 @@ FastAPI-week2/
 ├── data/                      # 练习数据目录（暂为空）
 ├── output/                    # 数据保存目录（暂为空）
 │
-├── app/                       # 主应用（Day 3 分层结构）
+├── app/                       # 主应用（Day 3 分层结构 + Day 4 数据层）
 │   ├── __init__.py
-│   ├── main.py                # 应用入口：创建 FastAPI 实例、注册中间件与路由
+│   ├── main.py                # 应用入口：创建 FastAPI 实例、注册中间件与路由、自动建表
 │   ├── api/                   # 路由层：只处理 HTTP 请求与响应
 │   │   ├── __init__.py
 │   │   ├── health.py          # /health/ 健康检查
 │   │   └── users.py           # /users 用户相关接口
 │   ├── core/                  # 基础设施层
 │   │   ├── __init__.py
-│   │   ├── config.py          # 配置类，从 .env 读取 app_name / debug
+│   │   ├── config.py          # 配置类，从 .env 读取 app_name / debug / database_url
 │   │   └── middleware.py      # 请求耗时中间件
+│   ├── db/                    # 数据库连接层（Day 4 新增）
+│   │   ├── base.py            # 声明基类 Base
+│   │   └── session.py         # engine / SessionLocal / get_db 依赖
+│   ├── models/                # ORM 模型层（Day 4 新增）
+│   │   └── user.py            # User 模型，映射 users 表
 │   ├── schemas/               # 数据模型层
 │   │   ├── __init__.py
 │   │   └── user.py            # UserCreate / UserUpdate / UserResponse
 │   └── services/              # 业务逻辑层
 │       ├── __init__.py
-│       └── user_service.py    # 内存 CRUD 的具体实现
+│       └── user_service.py    # 用户增删改查的具体实现（操作数据库）
 │
 └── tests/                     # 每日练习代码
     ├── day1_test.py           # Day1：基础路由 / 路径参数 / 查询参数 / 请求体
@@ -74,9 +91,12 @@ FastAPI-week2/
     └── day3_time_demo.py      # Day3：中间件练习
 ```
 
+> **说明**：`app/db/` 与 `app/models/` 暂未放置 `__init__.py`，依赖 Python 的命名空间包机制导入，可以正常工作；若想与其余目录保持一致，补两个空文件即可。
+
 ## 环境
 - Python 3.13.14
 - 操作系统：Windows 11
+- 数据库：MySQL（Day 4 起接入，Python 驱动为 `PyMySQL`）
 
 ## 安装步骤
 
@@ -135,9 +155,12 @@ SECRET_KEY=
 ```
 
 - **Day 3 已使用**：`APP_NAME`、`DEBUG`，由 `app/core/config.py` 的 `Settings` 类读取，分别对应字段 `app_name`、`debug`（`pydantic-settings` 默认大小写不敏感，`.env` 里写大写、代码里用小写即可）。
-- `GITHUB_TOKEN`、`DATABASE_URL`、`SECRET_KEY` 暂未使用，为后续接入 GitHub / 数据库 / 鉴权预留。
+- **Day 4 新增字段**：`DATABASE_URL`、`GITHUB_TOKEN`，对应 `database_url`、`github_token`。其中 `DATABASE_URL` 是 SQLAlchemy 连接串，格式为 `mysql+pymysql://用户名:密码@主机:端口/数据库名`，需要先在 MySQL 中建好这个数据库（表由应用启动时自动创建）；`github_token` 目前只是读进来，尚未使用。
+- `SECRET_KEY` 仍未使用，为后续鉴权预留。
 - 也可以继续用 `os.getenv("XXX")` 读取配置，两种方式并存。
 - 确认 `.gitignore` 中包含 `.env`，防止密钥被提交至 Git；`.env_example` 只放变量名、不放真实值，可以提交。
+
+> **注意**：`Settings.model_config` 里的 `extra="ignore"` 在 Day 4 被注释掉了，此时 `.env` 中若出现 `Settings` 里没有定义的字段就会启动报错（`ValidationError`）。例如照抄 `.env_example` 得到 `.env` 时，多出来的 `SECRET_KEY` 就会触发这个问题——要么在 `Settings` 中补上该字段，要么恢复 `extra="ignore"`。
 
 > **⚠️ 安全提示**：Token 和 API Key 等同于密码，请勿直接写在代码中，也不要上传至 GitHub。
 
@@ -145,11 +168,13 @@ SECRET_KEY=
 
 ## 运行方式
 
-**启动主应用（Day 3 结构）：**
+**启动主应用（Day 3 分层结构 + Day 4 数据库）：**
 
 ```bash
 python -m uvicorn app.main:app --reload
 ```
+
+> **运行前准备（Day 4 起）**：先在本地启动 MySQL 服务并创建好 `.env` 中 `DATABASE_URL` 指向的数据库（例如 `CREATE DATABASE fastapi_week2 DEFAULT CHARSET utf8mb4;`），然后按下面的命令启动应用——`users` 表会在启动时由 `Base.metadata.create_all()` 自动创建，不需要手写建表 SQL。
 
 **启动 Day 1 / Day 2 的练习文件：**
 
@@ -244,7 +269,7 @@ curl http://127.0.0.1:8000/health/
 # 创建用户（重名返回 400）
 curl -X POST http://127.0.0.1:8000/users/ \
   -H "Content-Type: application/json" \
-  -d '{"name":"koko","age":23}'
+  -d '{"name":"koko","age":20}'
 
 # 分页查询
 curl "http://127.0.0.1:8000/users/?page=1&size=10"
@@ -255,7 +280,7 @@ curl http://127.0.0.1:8000/users/1
 # 更新（不存在返回 404）
 curl -X PUT http://127.0.0.1:8000/users/1 \
   -H "Content-Type: application/json" \
-  -d '{"name":"koko2","age":24}'
+  -d '{"name":"koko2","age":20}'
 
 # 删除（成功返回 204，不存在返回 404）
 curl -X DELETE http://127.0.0.1:8000/users/1
@@ -277,7 +302,35 @@ curl -X DELETE http://127.0.0.1:8000/users/1
 
 > **说明**：每个请求的耗时都会打印在启动服务的控制台里，形如 `/users/: 0.0019s`。
 
-> **提示**：数据仍然保存在 `app/services/user_service.py` 的内存变量中，服务重启后会清空。数据持久化留待后续实现。
+> **提示**：Day 3 时数据保存在 `app/services/user_service.py` 的内存变量中，服务重启后会清空；Day 4 起已改为存入 MySQL，见下节。
+
+**用 curl 测试接口（Day 4）：**
+
+```bash
+# 创建用户（重名返回 400，数据写入 users 表）
+curl -X POST http://127.0.0.1:8000/users/ \
+  -H "Content-Type: application/json" \
+  -d '{"name":"koko","age":20}'
+
+# 分页查询（读的就是数据库里的数据）
+curl "http://127.0.0.1:8000/users/?page=1&size=10"
+
+# 重启服务后再查一次，数据依然存在（验证已落库）
+curl "http://127.0.0.1:8000/users/?page=1&size=10"
+```
+
+### Day 4 接口一览
+
+Day 4 改的是数据层，接口路径、参数与状态码与 Day 3 完全一致（见上表），只有下面几处差异：
+
+| 变化点 | 说明 |
+| --- | --- |
+| 数据存储 | 由内存变量改为 MySQL 的 `users` 表，服务重启后数据不丢失 |
+| 数据库会话 | 每个接口通过 `db: Session = Depends(get_db)` 注入会话，请求结束自动关闭 |
+| 路径参数 | `GET /users/{user_id}` 的 `user_id` 也要求大于 0（Day 3 未做校验） |
+| 建表 | 应用启动时自动执行 `Base.metadata.create_all()` 创建缺失的表 |
+
+> **提示**：Day 4 之后接口错误仍由路由层决定——找不到用户返回 404，创建重名返回 400，service 层只返回 `None` / `False`。
 
 ## 更新依赖
 
