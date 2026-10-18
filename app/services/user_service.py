@@ -3,6 +3,7 @@ from app.schemas.user import UserCreate,UserUpdate
 from app.models.user import User
 
 from sqlalchemy.orm import Session
+from app.core.security import hash_password
 
 
 
@@ -29,13 +30,14 @@ def find_user_by_name(db: Session, name: str) -> User | None:
     return db.query(User).filter(User.name == name).first()
 
 
-# 创建
+# 创建用户
 def create_user(db: Session,user_data: UserCreate) -> User|None:
     if find_user_by_name(db,user_data.name):
         return None
 
     user = User(
         name = user_data.name,
+        password_hash = hash_password(user_data.password),
         age= user_data.age
     )
     db.add(user)        # 加入会话
@@ -45,7 +47,7 @@ def create_user(db: Session,user_data: UserCreate) -> User|None:
     
 
 
-# 更新
+# 更新用户信息
 def update_user(
     db: Session,
     user_id: int,
@@ -66,7 +68,7 @@ def update_user(
     return user
 
 
-# 删除
+# 删除用户
 def delete_user(
     db: Session,
     user_id: int

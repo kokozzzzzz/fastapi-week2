@@ -47,6 +47,20 @@
 - **补齐路径校验**：`GET /users/{user_id}` 的 `user_id` 补上 `Path(gt=0)`，与更新、删除接口保持一致
 - **新增依赖**：`SQLAlchemy`（ORM）、`PyMySQL`（MySQL 驱动）
 
+### Day 5：用户认证（密码哈希 + JWT）
+- **密码哈希**：`app/core/security.py` 用 `pwdlib` 的 `PasswordHash.recommended()`（底层为 Argon2）实现 `hash_password()` / `verify_password()`，数据库只保存哈希值，注册和登录全程不接触明文密码
+- **JWT 签发**：`create_access_token(user_id)` 用 `PyJWT` 生成 token，payload 包含 `sub`（用户 ID，按 JWT 规范转成字符串）和 `exp`（UTC 过期时间）；有效期读 `ACCESS_TOKEN_EXPIRE_MINUTES`（默认 30 分钟），签名密钥读 `SECRET_KEY`，算法读 `ALGORITHM`（默认 `HS256`）
+- **JWT 校验**：`decode_access_token(token)` 验签并解析 payload，捕获 `jwt.InvalidTokenError`（伪造、被篡改或已过期）后统一返回 `None`，校验通过则把 `sub` 转回 `int` 用户 ID
+- **数据模型调整**：`User` 增加 `password_hash` 列（`String(255)`、非空）；`UserCreate` 增加 `password` 字段（`Field(min_length=6, max_length=128)`）；`UserResponse` 不含密码相关字段，避免泄露
+- **注册**：`app/services/auth_service.py` 的 `register_user()` 先调用 `find_user_by_name()` 查重，再用 `hash_password()` 哈希后写库；`POST /auth/register` 成功返回 201，用户名已存在返回 400
+- **登录**：`authenticate_user()` 按用户名查用户并 `verify_password()` 校验；`POST /auth/login` 使用 `OAuth2PasswordRequestForm` 接收**表单**数据（`username` / `password`，不是 JSON），成功返回 `{"access_token": ..., "token_type": "bearer"}`，账号或密码错误返回 401
+- **当前用户依赖**：`app/core/dependencies.py` 定义 `oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")` 与 `get_current_user()`——从请求头 `Authorization: Bearer <token>` 取出 token，解码后查用户；token 无效 / 过期或用户不存在都返回 401，并带 `WWW-Authenticate: Bearer` 响应头
+- **受保护接口**：`GET /auth/me` 通过 `Depends(get_current_user)` 返回当前登录用户的信息
+- **复用已有逻辑**：`auth_service` 复用 `user_service.find_user_by_name()`，`get_current_user` 复用 `user_service.find_user()`，没有重复写查询
+- **连带调整用户创建**：`user_service.create_user()` 也改为先哈希密码再入库，因此 `POST /users/` 的请求体现在同样必须带 `password`（与 `/auth/register` 功能有重叠）
+- **待办**：`app/schemas/auth.py` 定义了 `LoginRequest`，但登录接口实际用的是表单 `OAuth2PasswordRequestForm`，该类目前未被使用
+- **新增依赖**：`PyJWT`（签发 / 校验 JWT）、`pwdlib` + `argon2-cffi`（密码哈希）、`python-multipart`（解析登录表单）
+
 ## 项目结构
 
 ```text
@@ -61,27 +75,32 @@ FastAPI-week2/
 ├── data/                      # 练习数据目录（暂为空）
 ├── output/                    # 数据保存目录（暂为空）
 │
-├── app/                       # 主应用（Day 3 分层结构 + Day 4 数据层）
+├── app/                       # 主应用（Day 3 分层结构 + Day 4 数据层 + Day 5 认证）
 │   ├── __init__.py
 │   ├── main.py                # 应用入口：创建 FastAPI 实例、注册中间件与路由、自动建表
 │   ├── api/                   # 路由层：只处理 HTTP 请求与响应
 │   │   ├── __init__.py
+│   │   ├── auth.py            # /auth 注册、登录、当前用户（Day 5 新增）
 │   │   ├── health.py          # /health/ 健康检查
 │   │   └── users.py           # /users 用户相关接口
 │   ├── core/                  # 基础设施层
 │   │   ├── __init__.py
-│   │   ├── config.py          # 配置类，从 .env 读取 app_name / debug / database_url
-│   │   └── middleware.py      # 请求耗时中间件
+│   │   ├── config.py          # 配置类，从 .env 读取 app_name / database_url / secret_key 等
+│   │   ├── dependencies.py    # OAuth2PasswordBearer + get_current_user 依赖（Day 5 新增）
+│   │   ├── middleware.py      # 请求耗时中间件
+│   │   └── security.py        # 密码哈希与 JWT 签发 / 校验（Day 5 新增）
 │   ├── db/                    # 数据库连接层（Day 4 新增）
 │   │   ├── base.py            # 声明基类 Base
 │   │   └── session.py         # engine / SessionLocal / get_db 依赖
 │   ├── models/                # ORM 模型层（Day 4 新增）
-│   │   └── user.py            # User 模型，映射 users 表
+│   │   └── user.py            # User 模型（含 password_hash），映射 users 表
 │   ├── schemas/               # 数据模型层
 │   │   ├── __init__.py
-│   │   └── user.py            # UserCreate / UserUpdate / UserResponse
+│   │   ├── auth.py            # LoginRequest / TokenResponse（Day 5 新增）
+│   │   └── user.py            # UserCreate（含 password）/ UserUpdate / UserResponse
 │   └── services/              # 业务逻辑层
 │       ├── __init__.py
+│       ├── auth_service.py    # 注册与登录校验（Day 5 新增）
 │       └── user_service.py    # 用户增删改查的具体实现（操作数据库）
 │
 └── tests/                     # 每日练习代码
@@ -152,29 +171,37 @@ APP_NAME=
 DEBUG=
 DATABASE_URL=
 SECRET_KEY=
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
 
 - **Day 3 已使用**：`APP_NAME`、`DEBUG`，由 `app/core/config.py` 的 `Settings` 类读取，分别对应字段 `app_name`、`debug`（`pydantic-settings` 默认大小写不敏感，`.env` 里写大写、代码里用小写即可）。
 - **Day 4 新增字段**：`DATABASE_URL`、`GITHUB_TOKEN`，对应 `database_url`、`github_token`。其中 `DATABASE_URL` 是 SQLAlchemy 连接串，格式为 `mysql+pymysql://用户名:密码@主机:端口/数据库名`，需要先在 MySQL 中建好这个数据库（表由应用启动时自动创建）；`github_token` 目前只是读进来，尚未使用。
-- `SECRET_KEY` 仍未使用，为后续鉴权预留。
+- **Day 5 新增字段**：`SECRET_KEY`、`ALGORITHM`、`ACCESS_TOKEN_EXPIRE_MINUTES`，对应 `secret_key`、`algorithm`、`access_token_expire_minutes`。`SECRET_KEY` 是 JWT 的签名密钥，字段没有默认值，**必须填写**（缺失时启动会报错），建议用足够长的随机字符串；`ALGORITHM` 默认 `HS256`；`ACCESS_TOKEN_EXPIRE_MINUTES` 是 token 有效期（分钟），默认 30。
 - 也可以继续用 `os.getenv("XXX")` 读取配置，两种方式并存。
 - 确认 `.gitignore` 中包含 `.env`，防止密钥被提交至 Git；`.env_example` 只放变量名、不放真实值，可以提交。
 
-> **注意**：`Settings.model_config` 里的 `extra="ignore"` 在 Day 4 被注释掉了，此时 `.env` 中若出现 `Settings` 里没有定义的字段就会启动报错（`ValidationError`）。例如照抄 `.env_example` 得到 `.env` 时，多出来的 `SECRET_KEY` 就会触发这个问题——要么在 `Settings` 中补上该字段，要么恢复 `extra="ignore"`。
-
 > **⚠️ 安全提示**：Token 和 API Key 等同于密码，请勿直接写在代码中，也不要上传至 GitHub。
 
-> **注意**：`SettingsConfigDict(env_file=".env")` 中的路径是相对路径，相对**当前工作目录**解析。因此启动服务时请在项目根目录执行下面的命令，否则 `.env` 会读取不到（此时会静默使用代码里的默认值）。
+> **注意**：`SettingsConfigDict(env_file=".env")` 中的路径是相对路径，相对**当前工作目录**解析。因此启动服务时请在项目根目录执行下面的命令，否则 `.env` 会读取不到：多数字段会退回代码里的默认值，而 `secret_key` 没有默认值，Day 5 起会直接启动失败。
 
 ## 运行方式
 
-**启动主应用（Day 3 分层结构 + Day 4 数据库）：**
+**启动主应用（Day 3 分层结构 + Day 4 数据库 + Day 5 认证）：**
 
 ```bash
 python -m uvicorn app.main:app --reload
 ```
 
 > **运行前准备（Day 4 起）**：先在本地启动 MySQL 服务并创建好 `.env` 中 `DATABASE_URL` 指向的数据库（例如 `CREATE DATABASE fastapi_week2 DEFAULT CHARSET utf8mb4;`），然后按下面的命令启动应用——`users` 表会在启动时由 `Base.metadata.create_all()` 自动创建，不需要手写建表 SQL。
+
+> **⚠️ Day 5 表结构变更**：`User` 新增了 `password_hash` 列（非空），但 `create_all()` 只创建缺失的表，**不会修改已存在的表**。如果数据库里已经有 Day 4 建的 `users` 表，需要手动处理，例如：
+>
+> ```sql
+> ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) NOT NULL DEFAULT '';
+> ```
+>
+> 已有用户没有密码，补上空默认值后这些账号无法登录（需要重新注册或更新密码）；也可以直接删表让应用重建，但会丢失已有数据。项目目前尚未接入 Alembic 迁移工具。
 
 **启动 Day 1 / Day 2 的练习文件：**
 
@@ -331,6 +358,43 @@ Day 4 改的是数据层，接口路径、参数与状态码与 Day 3 完全一�
 | 建表 | 应用启动时自动执行 `Base.metadata.create_all()` 创建缺失的表 |
 
 > **提示**：Day 4 之后接口错误仍由路由层决定——找不到用户返回 404，创建重名返回 400，service 层只返回 `None` / `False`。
+
+**用 curl 测试接口（Day 5）：**
+
+```bash
+# 注册（重名返回 400）
+curl -X POST http://127.0.0.1:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"koko","password":"secret123","age":20}'
+
+# 登录：注意是表单数据（application/x-www-form-urlencoded），不是 JSON
+curl -X POST http://127.0.0.1:8000/auth/login \
+  -d "username=koko&password=secret123"
+# 返回形如 {"access_token":"...","token_type":"bearer"}
+
+# 用登录拿到的 token 访问受保护接口
+curl http://127.0.0.1:8000/auth/me \
+  -H "Authorization: Bearer <access_token>"
+```
+
+### Day 5 接口一览
+
+| 方法 | 路径 | 参数 | 说明 |
+| --- | --- | --- | --- |
+| POST | `/auth/register` | 请求体 `UserCreate`：`name`（1～50 字符）、`password`（6～128 字符）、`age`（0～150） | 注册用户，成功返回 201，用户名已存在返回 400 |
+| POST | `/auth/login` | 表单 `username`、`password` | 登录，成功返回 `access_token` 与 `token_type`，账号或密码错误返回 401 |
+| GET | `/auth/me` | 请求头 `Authorization: Bearer <token>` | 返回当前登录用户，token 无效 / 过期返回 401 |
+| POST | `/users/` | 请求体 `UserCreate`（同注册，必须带 `password`） | 创建用户，成功 201，重名 400（与 `/auth/register` 功能重叠） |
+
+> **说明**：`/auth/register`、`/auth/login`、`/auth/me` 的路径没有结尾斜杠，不存在 `/users/` 那样的 307 重定向问题。
+
+> **提示**：Day 5 起 `UserCreate` 增加了 `password` 字段，Day 4 的创建用户示例需要补上 `"password":"secret123"`，否则返回 422；也可以直接改用 `/auth/register`。
+
+> **提示**：在 `/docs` 页面点击右上角的 **Authorize**，填入用户名和密码，Swagger 会自动调用 `/auth/login` 并保存 token，之后再访问受保护接口会自动带上 `Authorization` 头。
+
+> **提示**：token 默认 30 分钟后过期，过期后调用 `/auth/me` 返回 401，需要重新登录获取新 token。
+
+> **⚠️ 安全提示**：`SECRET_KEY` 等同于签发 token 的私钥，泄露后任何人都能伪造登录状态。不要把它写进代码或提交到 Git，生产环境应换成足够长的随机值并妥善保管。
 
 ## 更新依赖
 

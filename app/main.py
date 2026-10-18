@@ -11,6 +11,8 @@ from app.db.base import Base
 from app.db.session import engine
 from app.models import user  # noqa
 
+from app.api.auth import router as auth_router
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -31,3 +33,5 @@ def root():
 
 
 app.include_router(health_router)
+
+app.include_router(auth_router)
