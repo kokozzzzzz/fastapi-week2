@@ -26,8 +26,8 @@
 - **目录重构**：把 Day 1 / Day 2 的练习文件移入 `tests/`，主应用迁至 `app/`，按职责分层——`api/`（路由）、`schemas/`（数据模型）、`services/`（业务逻辑）、`core/`（配置与中间件）
 - **APIRouter 拆分路由**：`app/api/users.py` 定义 `APIRouter(prefix="/users", tags=["Users"])`，`app/main.py` 通过 `app.include_router()` 注册，入口文件不再堆砌所有接口
 - **分层职责划分**：路由层只负责 HTTP 相关的事（参数校验、抛 `HTTPException`），业务逻辑下沉到 `app/services/user_service.py`；service 层用 `None` / `False` 表达“未找到”，由路由层决定返回什么错误码，不再由 service 层直接抛 HTTP 异常
-- **配置管理**：`app/core/config.py` 用 `pydantic-settings` 的 `BaseSettings` 定义配置类，通过 `SettingsConfigDict(env_file=".env", extra="ignore")` 自动读取 `.env`，应用名等信息不再硬编码
-- **中间件**：`app/core/middleware.py` 实现 `add_process_time`，用 `time.time()` 记录每个请求的耗时并打印到控制台，在 `main.py` 中通过 `app.middleware("http")` 注册
+- **配置管理**：`app/core/config.py` 用 `pydantic-settings` 的 `BaseSettings` 定义配置类，通过 `SettingsConfigDict(env_file=".env")` 自动读取 `.env`，应用名等信息不再硬编码（`extra="ignore"` 当前在代码中已注释）
+- **中间件**：`app/core/middleware.py` 实现 `add_process_time`，用 `time.time()` 记录每个请求的耗时并打印到控制台，在 `main.py` 中通过 `app.middleware("http")` 注册（Day 6 起主应用改用 `log_request_time`，见对应章节）
 - **健康检查**：新增 `app/api/health.py`，提供 `/health/` 接口返回 `{"status": "ok"}`
 - **应用元信息**：`FastAPI(title=setting.app_name, version="0.1.0")`，标题从配置读取
 - **依赖注入练习**：`tests/day3_depends_demo.py` 用 `Depends(common_params)` 把公共查询参数抽成可复用的依赖函数
@@ -61,6 +61,21 @@
 - **待办**：`app/schemas/auth.py` 定义了 `LoginRequest`，但登录接口实际用的是表单 `OAuth2PasswordRequestForm`，该类目前未被使用
 - **新增依赖**：`PyJWT`（签发 / 校验 JWT）、`pwdlib` + `argon2-cffi`（密码哈希）、`python-multipart`（解析登录表单）
 
+### Day 6：文件上传、外部 API 调用与 CORS
+- **文件上传接口**：`app/api/files.py` 定义 `APIRouter(prefix="/files", tags=["Files"])`，`POST /files/` 用 `UploadFile = File(...)` 接收 multipart 表单文件，成功返回 201
+- **上传目录**：`UPLOAD_DIR = Path("uploads")`，模块导入时用 `mkdir(parents=True, exist_ok=True)` 自动创建；`.gitignore` 新增 `uploads/`，上传的文件不进入 Git
+- **扩展名白名单**：只允许 `.txt`、`.md`、`.pdf`，按原始文件名的 `Path(original_name).suffix.lower()` 判断，其余格式返回 400
+- **大小限制**：`MAX_FILE_SIZE = 5 * 1024 * 1024`，按 1MB 分块读取并累计大小，超过 5MB 返回 413；已写入磁盘的部分用 `destination.unlink(missing_ok=True)` 删除，避免留下不完整文件
+- **存储文件名**：不直接用用户上传的原始文件名，改用 `uuid4().hex` + 原扩展名（如 `30371c5e....txt`），避免路径穿越和同名覆盖；响应同时返回原始文件名 `filename`、存储名 `stored_as`、大小 `size_bytes`
+- **资源释放**：成功、格式不支持、文件过大三种情况都会 `await file.close()` 关闭上传文件（超大分支由 `finally` 保证）
+- **外部 API 调用**：`app/api/external.py` 提供 `GET /external/github/{username}`，用 `httpx.AsyncClient(timeout=10.0)` 异步请求 GitHub 的 `/users/{username}` 接口
+- **请求头**：GitHub API 要求必须带 `User-Agent`；同时通过 `Authorization: token <GITHUB_TOKEN>` 认证，提高速率限制
+- **错误映射**：网络异常 / 连接失败返回 502，GitHub 返回 404 时映射为 404，其他非 2xx 返回 502；响应只挑 `login`、`public_repos`、`followers`、`html_url` 四个字段，不把 GitHub 的完整响应原样透传
+- **配置读取**：`external.py` 在模块导入时 `load_dotenv()` 后读取 `os.getenv("GITHUB_TOKEN")`，缺失则直接 `raise ValueError`，应用启动即失败（而不是等接口被调用时才报错）
+- **CORS**：`main.py` 通过 `CORSMiddleware` 允许 `http://localhost:5173` 与 `http://127.0.0.1:5173`（Vite 开发服务器默认端口）跨域访问，`allow_credentials=True`，方法和请求头不限制
+- **请求日志中间件升级**：`app/core/middleware.py` 新增 `log_request_time` 替代原来的 `add_process_time`——用 `time.perf_counter()` 计时，在响应头写入 `X-Process-Time`（单位 ms），并打印 `方法 路径 状态码 耗时`，形如 `GET /users/ 200 3.12ms`；原 `add_process_time` 函数保留，`main.py` 中的注册行已注释
+- **依赖复用**：`httpx` 此前已在依赖清单中（测试相关），Day 6 直接用于外部请求，没有新增第三方库
+
 ## 项目结构
 
 ```text
@@ -74,20 +89,23 @@ FastAPI-week2/
 ├── conftest.py                # 空文件，让 pytest 把项目根加入 sys.path
 ├── data/                      # 练习数据目录（暂为空）
 ├── output/                    # 数据保存目录（暂为空）
+├── uploads/                   # 上传文件保存目录（运行时自动创建，已加入 .gitignore）
 │
-├── app/                       # 主应用（Day 3 分层结构 + Day 4 数据层 + Day 5 认证）
+├── app/                       # 主应用（Day 3 分层结构 + Day 4 数据层 + Day 5 认证 + Day 6 文件与外部 API）
 │   ├── __init__.py
-│   ├── main.py                # 应用入口：创建 FastAPI 实例、注册中间件与路由、自动建表
+│   ├── main.py                # 应用入口：创建 FastAPI 实例、注册 CORS / 中间件与路由、自动建表
 │   ├── api/                   # 路由层：只处理 HTTP 请求与响应
 │   │   ├── __init__.py
 │   │   ├── auth.py            # /auth 注册、登录、当前用户（Day 5 新增）
+│   │   ├── external.py        # /external 调用 GitHub API（Day 6 新增）
+│   │   ├── files.py           # /files 文件上传（Day 6 新增）
 │   │   ├── health.py          # /health/ 健康检查
 │   │   └── users.py           # /users 用户相关接口
 │   ├── core/                  # 基础设施层
 │   │   ├── __init__.py
 │   │   ├── config.py          # 配置类，从 .env 读取 app_name / database_url / secret_key 等
 │   │   ├── dependencies.py    # OAuth2PasswordBearer + get_current_user 依赖（Day 5 新增）
-│   │   ├── middleware.py      # 请求耗时中间件
+│   │   ├── middleware.py      # 请求耗时中间件（Day 6 新增 log_request_time）
 │   │   └── security.py        # 密码哈希与 JWT 签发 / 校验（Day 5 新增）
 │   ├── db/                    # 数据库连接层（Day 4 新增）
 │   │   ├── base.py            # 声明基类 Base
@@ -155,7 +173,7 @@ pip freeze > requirements.txt
 
 > **提示**：Windows PowerShell 的重定向默认生成 UTF-16 编码的文件，可能导致其他环境读取异常（Git 也会把它当二进制文件处理，无法正常 diff）。可改用 `pip freeze | Out-File -Encoding utf8 requirements.txt`。
 >
-> 当前仓库中的 `requirements.txt` 即为 UTF-16 编码，属于待修正项。
+> 当前仓库中的 `requirements.txt` 已是 UTF-8（ASCII）编码，可直接使用。
 
 ## 配置说明
 
@@ -176,18 +194,19 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
 
 - **Day 3 已使用**：`APP_NAME`、`DEBUG`，由 `app/core/config.py` 的 `Settings` 类读取，分别对应字段 `app_name`、`debug`（`pydantic-settings` 默认大小写不敏感，`.env` 里写大写、代码里用小写即可）。
-- **Day 4 新增字段**：`DATABASE_URL`、`GITHUB_TOKEN`，对应 `database_url`、`github_token`。其中 `DATABASE_URL` 是 SQLAlchemy 连接串，格式为 `mysql+pymysql://用户名:密码@主机:端口/数据库名`，需要先在 MySQL 中建好这个数据库（表由应用启动时自动创建）；`github_token` 目前只是读进来，尚未使用。
+- **Day 4 新增字段**：`DATABASE_URL`、`GITHUB_TOKEN`，对应 `database_url`、`github_token`。其中 `DATABASE_URL` 是 SQLAlchemy 连接串，格式为 `mysql+pymysql://用户名:密码@主机:端口/数据库名`，需要先在 MySQL 中建好这个数据库（表由应用启动时自动创建）；`GITHUB_TOKEN` 从 Day 6 起用于调用 GitHub API。
 - **Day 5 新增字段**：`SECRET_KEY`、`ALGORITHM`、`ACCESS_TOKEN_EXPIRE_MINUTES`，对应 `secret_key`、`algorithm`、`access_token_expire_minutes`。`SECRET_KEY` 是 JWT 的签名密钥，字段没有默认值，**必须填写**（缺失时启动会报错），建议用足够长的随机字符串；`ALGORITHM` 默认 `HS256`；`ACCESS_TOKEN_EXPIRE_MINUTES` 是 token 有效期（分钟），默认 30。
+- **Day 6 起 `GITHUB_TOKEN` 必填**：`app/api/external.py` 在模块导入时用 `load_dotenv()` + `os.getenv("GITHUB_TOKEN")` 直接读取（不是通过 `Settings.github_token`），未配置会直接 `raise ValueError`，应用无法启动。`load_dotenv()` 不带参数时会从该文件所在目录向上逐级查找 `.env`，因此能定位到项目根目录的 `.env`。
 - 也可以继续用 `os.getenv("XXX")` 读取配置，两种方式并存。
 - 确认 `.gitignore` 中包含 `.env`，防止密钥被提交至 Git；`.env_example` 只放变量名、不放真实值，可以提交。
 
 > **⚠️ 安全提示**：Token 和 API Key 等同于密码，请勿直接写在代码中，也不要上传至 GitHub。
 
-> **注意**：`SettingsConfigDict(env_file=".env")` 中的路径是相对路径，相对**当前工作目录**解析。因此启动服务时请在项目根目录执行下面的命令，否则 `.env` 会读取不到：多数字段会退回代码里的默认值，而 `secret_key` 没有默认值，Day 5 起会直接启动失败。
+> **注意**：`SettingsConfigDict(env_file=".env")` 中的路径是相对路径，相对**当前工作目录**解析；Day 6 的 `uploads/` 上传目录同样按当前工作目录创建。因此启动服务时请在项目根目录执行下面的命令，否则 `Settings` 会读不到 `.env`：多数字段会退回代码里的默认值，而 `secret_key` 没有默认值，Day 5 起会直接启动失败；`external.py` 的 `load_dotenv()` 虽然会从文件所在目录向上查找 `.env`，但 `uploads/` 仍会建在错误的目录下。
 
 ## 运行方式
 
-**启动主应用（Day 3 分层结构 + Day 4 数据库 + Day 5 认证）：**
+**启动主应用（Day 3 分层结构 + Day 4 数据库 + Day 5 认证 + Day 6 文件上传 / 外部 API）：**
 
 ```bash
 python -m uvicorn app.main:app --reload
@@ -327,7 +346,7 @@ curl -X DELETE http://127.0.0.1:8000/users/1
 
 > **注意**：因为 `APIRouter` 的 `prefix="/users"` 配合 `@router.get("/")`，实际路径带上了结尾斜杠。请求不带斜杠的 `/users`、`/health` 会收到 307 重定向，`curl` 需要加 `-L` 才会自动跟随，浏览器和 `/docs` 页面不受影响。
 
-> **说明**：每个请求的耗时都会打印在启动服务的控制台里，形如 `/users/: 0.0019s`。
+> **说明**：每个请求的耗时都会打印在启动服务的控制台里，形如 `/users/: 0.0019s`。Day 6 起主应用改用 `log_request_time`，输出格式变为 `GET /users/ 200 3.12ms`，并在响应头中返回 `X-Process-Time`。
 
 > **提示**：Day 3 时数据保存在 `app/services/user_service.py` 的内存变量中，服务重启后会清空；Day 4 起已改为存入 MySQL，见下节。
 
@@ -395,6 +414,41 @@ curl http://127.0.0.1:8000/auth/me \
 > **提示**：token 默认 30 分钟后过期，过期后调用 `/auth/me` 返回 401，需要重新登录获取新 token。
 
 > **⚠️ 安全提示**：`SECRET_KEY` 等同于签发 token 的私钥，泄露后任何人都能伪造登录状态。不要把它写进代码或提交到 Git，生产环境应换成足够长的随机值并妥善保管。
+
+**用 curl 测试接口（Day 6）：**
+
+```bash
+# 上传文件（只允许 .txt / .md / .pdf，最大 5MB）
+curl -X POST http://127.0.0.1:8000/files/ \
+  -F "file=@README.md"
+# 返回形如 {"filename":"README.md","stored_as":"<uuid>.md","size_bytes":25000}
+
+# 上传不支持的格式（返回 400）
+curl -X POST http://127.0.0.1:8000/files/ \
+  -F "file=@photo.png"
+
+# 调用外部 GitHub API
+curl http://127.0.0.1:8000/external/github/torvalds
+# 返回 {"username":...,"public_repos":...,"followers":...,"html_url":...}
+
+# 用户不存在时返回 404
+curl http://127.0.0.1:8000/external/github/this-user-should-not-exist-123456
+```
+
+### Day 6 接口一览
+
+| 方法 | 路径 | 参数 | 说明 |
+| --- | --- | --- | --- |
+| POST | `/files/` | multipart 表单字段 `file` | 上传文件，限 `.txt` / `.md` / `.pdf`、不超过 5MB，成功返回 201 及 `filename` / `stored_as` / `size_bytes`；格式不支持返回 400，超过 5MB 返回 413 |
+| GET | `/external/github/{username}` | 路径参数 `username` | 查询 GitHub 用户公开信息，返回 `username` / `public_repos` / `followers` / `html_url`；用户不存在返回 404，外部请求失败返回 502 |
+
+> **注意**：`/files/` 带结尾斜杠，请求 `/files` 会收到 307 重定向；`/external/github/{username}` 不带结尾斜杠。
+
+> **提示**：上传的文件以 UUID 重命名后保存在根目录 `uploads/` 下，原始文件名只出现在响应中；`uploads/` 已加入 `.gitignore`，不会误提交。
+
+> **⚠️ 启动前提**：`.env` 中必须填写 `GITHUB_TOKEN`，否则 `app/api/external.py` 在导入时就会抛出 `ValueError`，整个应用无法启动。GitHub 的公开用户接口本身不强制认证，但带上 token 后限额更高。
+
+> **提示**：CORS 已允许 `http://localhost:5173` 与 `http://127.0.0.1:5173` 跨域访问；如果前端换了端口，需要同步修改 `app/main.py` 中的 `allow_origins`。
 
 ## 更新依赖
 
