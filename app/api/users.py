@@ -6,6 +6,7 @@ from fastapi import (
     Query,
 )
 
+from app.core.dependencies import get_current_user
 from app.db.session import get_db
 from app.schemas.user import (
     UserCreate,
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 router = APIRouter(
     prefix="/users",
     tags=["Users"],
+    dependencies=[Depends(get_current_user)],
 )
 
 # 创建用户

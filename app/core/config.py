@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     app_name: str = "FastAPI Week 2"
     debug: bool = True
     database_url : str = ""
+    test_database_url: str = ""  # 测试
+
     github_token : str = ""
     secret_key: str
     algorithm: str = "HS256"
