@@ -1,183 +1,128 @@
-# FastAPI 项目练习（Week 2）
+# FastAPI Week 2
 
-这是一个 FastAPI 学习练习项目，承接 Week 1 的 Python 基础练习（见 `python-test`），按“每日一个独立模块”的方式组织。每日的练习文件存放在 `tests/` 下；从 Day 3 起，在练习的基础上把代码重构为 `app/` 分层结构，作为后续开发的主应用。所有模块共享同一个虚拟环境。
+一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用与 pytest 接口测试，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
 
-## 项目内容
+- 主应用入口：`app/main.py`
+- 交互式接口文档：<http://127.0.0.1:8000/docs>
+- 学习记录：见文末「开发日志」
 
-### Day 1：FastAPI 基础（路由、参数与请求体）
-- 创建 `FastAPI` 应用实例，理解 `app = FastAPI()` 与装饰器路由（`@app.get` / `@app.post`）
-- 路径参数：`/users/{user_id}` 配合类型注解 `user_id: int`，自动完成参数解析与类型转换
-- 查询参数：`/search?keyword=&page=&size=`，带默认值的参数（`page: int = 1`）变为可选
-- 请求体：使用 Pydantic `BaseModel` 定义 `UserCreate`（name / age），POST 提交 JSON 自动校验并解析
-- 通过 `uvicorn` 启动服务，使用内置交互式文档（`/docs`、`/redoc`）调试接口
-- `tests/day1_test.py` 中已用注释预留商品接口（`/products/{product_id}`、`/products?category=`、`ProductCreate` 的 `Field(gt=0)` 校验）作为后续练习
+## 技术栈
 
-### Day 2：内存 CRUD（分页、响应模型与异常处理）
-- 用模块级列表 `users` 配合自增变量 `next_id` 作为存储，数据只存在内存中，服务重启即清空；`find_user(user_id)` 抽出按 ID 查找的逻辑
-- 按用途拆分 Pydantic 模型：`UserCreate`（创建入参校验）、`UserResponse`（统一响应结构）、`UserUpdate`（更新入参）
-- 用 `Field` 做字段级约束：`name` 限制 `min_length=1 / max_length=50`，`age` 限制 `gt=0 / lt=150`，非法值由 FastAPI 自动返回 422
-- 分页查询：`/users?page=&size=` 使用 `Query(default=1, ge=1, le=100, description="页码")`，通过列表切片 `users[start:end]` 返回当页数据
-- 路径参数校验：`/users/{user_id}` 使用 `Path(gt=0)`，要求 ID 为正整数
-- 每个接口用 `response_model` 声明响应结构，创建接口设置 `status_code=201`
-- 异常处理：查找、更新、删除找不到用户时抛出 `HTTPException(status_code=404, detail="用户未找到")`；创建时用户名重复返回 400
-- 练习状态码语义：创建成功 201、删除成功 204、资源不存在 404、用户名已存在 400
+| 分类 | 技术 |
+| --- | --- |
+| 语言 | Python 3.13 |
+| Web 框架 | FastAPI |
+| 数据校验 / 配置 | Pydantic、pydantic-settings |
+| ORM / 数据库 | SQLAlchemy 2.x、MySQL、PyMySQL |
+| 认证 | JWT（PyJWT）、Argon2 密码哈希（pwdlib） |
+| 外部请求 | httpx |
+| 服务器 | Uvicorn |
+| 测试 | pytest、FastAPI TestClient |
 
-### Day 3：项目分层重构（APIRouter、配置管理与中间件）
-- **目录重构**：把 Day 1 / Day 2 的练习文件移入 `tests/`，主应用迁至 `app/`，按职责分层——`api/`（路由）、`schemas/`（数据模型）、`services/`（业务逻辑）、`core/`（配置与中间件）
-- **APIRouter 拆分路由**：`app/api/users.py` 定义 `APIRouter(prefix="/users", tags=["Users"])`，`app/main.py` 通过 `app.include_router()` 注册，入口文件不再堆砌所有接口
-- **分层职责划分**：路由层只负责 HTTP 相关的事（参数校验、抛 `HTTPException`），业务逻辑下沉到 `app/services/user_service.py`；service 层用 `None` / `False` 表达“未找到”，由路由层决定返回什么错误码，不再由 service 层直接抛 HTTP 异常
-- **配置管理**：`app/core/config.py` 用 `pydantic-settings` 的 `BaseSettings` 定义配置类，通过 `SettingsConfigDict(env_file=".env")` 自动读取 `.env`，应用名等信息不再硬编码（`extra="ignore"` 当前在代码中已注释）
-- **中间件**：`app/core/middleware.py` 实现 `add_process_time`，用 `time.time()` 记录每个请求的耗时并打印到控制台，在 `main.py` 中通过 `app.middleware("http")` 注册（Day 6 起主应用改用 `log_request_time`，见对应章节）
-- **健康检查**：新增 `app/api/health.py`，提供 `/health/` 接口返回 `{"status": "ok"}`
-- **应用元信息**：`FastAPI(title=setting.app_name, version="0.1.0")`，标题从配置读取
-- **依赖注入练习**：`tests/day3_depends_demo.py` 用 `Depends(common_params)` 把公共查询参数抽成可复用的依赖函数
-- **中间件练习**：`tests/day3_time_demo.py` 单独练习中间件的写法
-- **修正 Day 2 遗留问题**：删除接口的路径随 `prefix="/users"` 统一为 `/users/{user_id}`，不再是与其余接口不一致的 `/user/{user_id}`
-- **新增依赖**：`pydantic-settings`（配置管理用，`python-dotenv` 作为其依赖一并安装）
+## 功能
 
-### Day 4：数据库接入（SQLAlchemy + MySQL）
-- **新增数据库连接层**：`app/db/base.py` 用 SQLAlchemy 2.0 的 `DeclarativeBase` 定义声明基类 `Base`；`app/db/session.py` 用 `create_engine(setting.database_url)` 创建引擎，再通过 `sessionmaker(bind=engine, autoflush=False, autocommit=False)` 得到会话工厂 `SessionLocal`
-- **会话依赖注入**：`get_db()` 是生成器函数，`yield` 出数据库会话、在 `finally` 中 `db.close()`；路由函数用 `db: Session = Depends(get_db)` 声明，FastAPI 负责在请求结束时关闭会话
-- **ORM 模型**：`app/models/user.py` 用 `Mapped[...]` + `mapped_column()` 的注解写法定义 `User`，映射到 `users` 表——`id`（主键、自增）、`name`（`String(50)`、唯一、非空）、`age`（非空）
-- **自动建表**：`app/main.py` 中导入模型后执行 `Base.metadata.create_all(bind=engine)`，启动时自动创建缺失的表（只建新表，不会修改已存在的表结构）
-- **服务层改造**：`app/services/user_service.py` 由内存列表改为数据库操作，每个函数第一个参数是 `db: Session`——分页用 `db.query(User).offset(start).limit(size).all()`，查单个用 `filter(User.id == user_id).first()`，创建用 `db.add()` + `db.commit()` + `db.refresh()`（刷新后才能拿到自增 id），删除用 `db.delete()` + `db.commit()`
-- **重名校验**：新增 `find_user_by_name()` 在创建前查重，同时 `name` 字段带 `unique=True` 作为数据库层的兜底约束
-- **响应模型适配**：`UserResponse` 增加 `model_config = ConfigDict(from_attributes=True)`，Pydantic 才能直接从 ORM 对象（而不是 dict）读取属性
-- **配置新增**：`Settings` 增加 `database_url`、`github_token` 字段，`DATABASE_URL` 从 `.env` 读取，连接串格式为 `mysql+pymysql://用户名:密码@主机:端口/数据库名`
-- **补齐路径校验**：`GET /users/{user_id}` 的 `user_id` 补上 `Path(gt=0)`，与更新、删除接口保持一致
-- **新增依赖**：`SQLAlchemy`（ORM）、`PyMySQL`（MySQL 驱动）
+- **用户管理**：用户的增删改查与分页查询，数据持久化到 MySQL；用户名唯一，字段由 Pydantic 校验。
+- **用户认证**：注册、登录、获取当前用户；密码使用 Argon2 哈希后入库，登录返回 JWT，受保护接口通过 `Authorization: Bearer <token>` 访问。
+- **接口保护**：`/users` 路由整体挂载 `get_current_user` 依赖，未携带有效 token 的请求统一返回 401。
+- **文件上传**：仅允许 `.txt` / `.md` / `.pdf`，单文件最大 5MB；文件以 UUID 重命名保存至 `uploads/`，原始文件名随响应返回。
+- **外部 API**：通过 `httpx` 异步调用 GitHub 用户接口，返回精简后的公开信息，并映射 404 / 502 错误。
+- **基础设施**：健康检查、请求耗时中间件（响应头 `X-Process-Time`）、CORS（允许 Vite 开发服务器跨域）。
+- **自动化测试**：pytest + TestClient，使用独立测试数据库，覆盖认证、用户、文件上传与健康检查。
 
-### Day 5：用户认证（密码哈希 + JWT）
-- **密码哈希**：`app/core/security.py` 用 `pwdlib` 的 `PasswordHash.recommended()`（底层为 Argon2）实现 `hash_password()` / `verify_password()`，数据库只保存哈希值，注册和登录全程不接触明文密码
-- **JWT 签发**：`create_access_token(user_id)` 用 `PyJWT` 生成 token，payload 包含 `sub`（用户 ID，按 JWT 规范转成字符串）和 `exp`（UTC 过期时间）；有效期读 `ACCESS_TOKEN_EXPIRE_MINUTES`（默认 30 分钟），签名密钥读 `SECRET_KEY`，算法读 `ALGORITHM`（默认 `HS256`）
-- **JWT 校验**：`decode_access_token(token)` 验签并解析 payload，捕获 `jwt.InvalidTokenError`（伪造、被篡改或已过期）后统一返回 `None`，校验通过则把 `sub` 转回 `int` 用户 ID
-- **数据模型调整**：`User` 增加 `password_hash` 列（`String(255)`、非空）；`UserCreate` 增加 `password` 字段（`Field(min_length=6, max_length=128)`）；`UserResponse` 不含密码相关字段，避免泄露
-- **注册**：`app/services/auth_service.py` 的 `register_user()` 先调用 `find_user_by_name()` 查重，再用 `hash_password()` 哈希后写库；`POST /auth/register` 成功返回 201，用户名已存在返回 400
-- **登录**：`authenticate_user()` 按用户名查用户并 `verify_password()` 校验；`POST /auth/login` 使用 `OAuth2PasswordRequestForm` 接收**表单**数据（`username` / `password`，不是 JSON），成功返回 `{"access_token": ..., "token_type": "bearer"}`，账号或密码错误返回 401
-- **当前用户依赖**：`app/core/dependencies.py` 定义 `oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")` 与 `get_current_user()`——从请求头 `Authorization: Bearer <token>` 取出 token，解码后查用户；token 无效 / 过期或用户不存在都返回 401，并带 `WWW-Authenticate: Bearer` 响应头
-- **受保护接口**：`GET /auth/me` 通过 `Depends(get_current_user)` 返回当前登录用户的信息
-- **复用已有逻辑**：`auth_service` 复用 `user_service.find_user_by_name()`，`get_current_user` 复用 `user_service.find_user()`，没有重复写查询
-- **连带调整用户创建**：`user_service.create_user()` 也改为先哈希密码再入库，因此 `POST /users/` 的请求体现在同样必须带 `password`（与 `/auth/register` 功能有重叠）
-- **待办**：`app/schemas/auth.py` 定义了 `LoginRequest`，但登录接口实际用的是表单 `OAuth2PasswordRequestForm`，该类目前未被使用
-- **新增依赖**：`PyJWT`（签发 / 校验 JWT）、`pwdlib` + `argon2-cffi`（密码哈希）、`python-multipart`（解析登录表单）
-
-### Day 6：文件上传、外部 API 调用与 CORS
-- **文件上传接口**：`app/api/files.py` 定义 `APIRouter(prefix="/files", tags=["Files"])`，`POST /files/` 用 `UploadFile = File(...)` 接收 multipart 表单文件，成功返回 201
-- **上传目录**：`UPLOAD_DIR = Path("uploads")`，模块导入时用 `mkdir(parents=True, exist_ok=True)` 自动创建；`.gitignore` 新增 `uploads/`，上传的文件不进入 Git
-- **扩展名白名单**：只允许 `.txt`、`.md`、`.pdf`，按原始文件名的 `Path(original_name).suffix.lower()` 判断，其余格式返回 400
-- **大小限制**：`MAX_FILE_SIZE = 5 * 1024 * 1024`，按 1MB 分块读取并累计大小，超过 5MB 返回 413；已写入磁盘的部分用 `destination.unlink(missing_ok=True)` 删除，避免留下不完整文件
-- **存储文件名**：不直接用用户上传的原始文件名，改用 `uuid4().hex` + 原扩展名（如 `30371c5e....txt`），避免路径穿越和同名覆盖；响应同时返回原始文件名 `filename`、存储名 `stored_as`、大小 `size_bytes`
-- **资源释放**：成功、格式不支持、文件过大三种情况都会 `await file.close()` 关闭上传文件（超大分支由 `finally` 保证）
-- **外部 API 调用**：`app/api/external.py` 提供 `GET /external/github/{username}`，用 `httpx.AsyncClient(timeout=10.0)` 异步请求 GitHub 的 `/users/{username}` 接口
-- **请求头**：GitHub API 要求必须带 `User-Agent`；同时通过 `Authorization: token <GITHUB_TOKEN>` 认证，提高速率限制
-- **错误映射**：网络异常 / 连接失败返回 502，GitHub 返回 404 时映射为 404，其他非 2xx 返回 502；响应只挑 `login`、`public_repos`、`followers`、`html_url` 四个字段，不把 GitHub 的完整响应原样透传
-- **配置读取**：`external.py` 在模块导入时 `load_dotenv()` 后读取 `os.getenv("GITHUB_TOKEN")`，缺失则直接 `raise ValueError`，应用启动即失败（而不是等接口被调用时才报错）
-- **CORS**：`main.py` 通过 `CORSMiddleware` 允许 `http://localhost:5173` 与 `http://127.0.0.1:5173`（Vite 开发服务器默认端口）跨域访问，`allow_credentials=True`，方法和请求头不限制
-- **请求日志中间件升级**：`app/core/middleware.py` 新增 `log_request_time` 替代原来的 `add_process_time`——用 `time.perf_counter()` 计时，在响应头写入 `X-Process-Time`（单位 ms），并打印 `方法 路径 状态码 耗时`，形如 `GET /users/ 200 3.12ms`；原 `add_process_time` 函数保留，`main.py` 中的注册行已注释
-- **依赖复用**：`httpx` 此前已在依赖清单中（测试相关），Day 6 直接用于外部请求，没有新增第三方库
-
-## 项目结构
+## 目录结构
 
 ```text
 FastAPI-week2/
-├── .env                       # 本地私有配置，存放 Token / API Key（不提交至 Git）
-├── .env_example               # 环境变量模板（可提交至 Git）
-├── .gitattributes
-├── .gitignore
-├── requirements.txt
-├── README.md
-├── conftest.py                # 空文件，让 pytest 把项目根加入 sys.path
-├── data/                      # 练习数据目录（暂为空）
-├── output/                    # 数据保存目录（暂为空）
-├── uploads/                   # 上传文件保存目录（运行时自动创建，已加入 .gitignore）
+├── app/                          # 主应用
+│   ├── main.py                   # 应用入口：创建 FastAPI 实例、注册中间件 / CORS / 路由、自动建表
+│   ├── api/                      # 路由层：只处理 HTTP 请求与响应
+│   │   ├── auth.py               # /auth 注册、登录、当前用户
+│   │   ├── external.py           # /external 调用 GitHub API
+│   │   ├── files.py              # /files 文件上传
+│   │   ├── health.py             # /health/ 健康检查
+│   │   └── users.py              # /users 用户相关接口（整体需要登录）
+│   ├── core/                     # 基础设施层
+│   │   ├── config.py             # Settings：从 .env 读取配置
+│   │   ├── dependencies.py       # OAuth2PasswordBearer + get_current_user
+│   │   ├── middleware.py         # 请求耗时中间件
+│   │   └── security.py           # 密码哈希与 JWT 签发 / 校验
+│   ├── db/                       # 数据库连接层
+│   │   ├── base.py               # 声明基类 Base
+│   │   └── session.py            # engine / SessionLocal / get_db 依赖
+│   ├── models/
+│   │   └── user.py               # User ORM 模型（含 password_hash），映射 users 表
+│   ├── schemas/
+│   │   ├── auth.py               # 登录 / Token 响应模型
+│   │   └── user.py               # UserCreate / UserUpdate / UserResponse
+│   └── services/                 # 业务逻辑层
+│       ├── auth_service.py       # 注册与登录校验
+│       └── user_service.py       # 用户增删改查
 │
-├── app/                       # 主应用（Day 3 分层结构 + Day 4 数据层 + Day 5 认证 + Day 6 文件与外部 API）
-│   ├── __init__.py
-│   ├── main.py                # 应用入口：创建 FastAPI 实例、注册 CORS / 中间件与路由、自动建表
-│   ├── api/                   # 路由层：只处理 HTTP 请求与响应
-│   │   ├── __init__.py
-│   │   ├── auth.py            # /auth 注册、登录、当前用户（Day 5 新增）
-│   │   ├── external.py        # /external 调用 GitHub API（Day 6 新增）
-│   │   ├── files.py           # /files 文件上传（Day 6 新增）
-│   │   ├── health.py          # /health/ 健康检查
-│   │   └── users.py           # /users 用户相关接口
-│   ├── core/                  # 基础设施层
-│   │   ├── __init__.py
-│   │   ├── config.py          # 配置类，从 .env 读取 app_name / database_url / secret_key 等
-│   │   ├── dependencies.py    # OAuth2PasswordBearer + get_current_user 依赖（Day 5 新增）
-│   │   ├── middleware.py      # 请求耗时中间件（Day 6 新增 log_request_time）
-│   │   └── security.py        # 密码哈希与 JWT 签发 / 校验（Day 5 新增）
-│   ├── db/                    # 数据库连接层（Day 4 新增）
-│   │   ├── base.py            # 声明基类 Base
-│   │   └── session.py         # engine / SessionLocal / get_db 依赖
-│   ├── models/                # ORM 模型层（Day 4 新增）
-│   │   └── user.py            # User 模型（含 password_hash），映射 users 表
-│   ├── schemas/               # 数据模型层
-│   │   ├── __init__.py
-│   │   ├── auth.py            # LoginRequest / TokenResponse（Day 5 新增）
-│   │   └── user.py            # UserCreate（含 password）/ UserUpdate / UserResponse
-│   └── services/              # 业务逻辑层
-│       ├── __init__.py
-│       ├── auth_service.py    # 注册与登录校验（Day 5 新增）
-│       └── user_service.py    # 用户增删改查的具体实现（操作数据库）
+├── tests/                        # pytest 自动化测试
+│   ├── conftest.py               # 测试数据库、TestClient、auth_headers fixture
+│   ├── test_auth.py              # 注册 / 登录 / 当前用户测试
+│   ├── test_files.py             # 文件上传测试
+│   ├── test_health.py            # 健康检查与参数校验测试
+│   └── test_users.py             # 用户接口认证与查询测试
 │
-└── tests/                     # 每日练习代码
-    ├── day1_test.py           # Day1：基础路由 / 路径参数 / 查询参数 / 请求体
-    ├── day2_test.py           # Day2：内存 CRUD / 分页 / 响应模型与异常处理
-    ├── day3_depends_demo.py   # Day3：Depends 依赖注入练习（应用实例变量名为 router）
-    └── day3_time_demo.py      # Day3：中间件练习
+├── conftest.py                   # 空文件，让 pytest 把项目根加入 sys.path
+├── requirements.txt              # 固定版本的依赖清单
+├── .env_example                  # 环境变量模板（可提交）
+├── .env                          # 本地私有配置（不提交）
+├── uploads/                      # 上传文件保存目录（运行时自动创建，已忽略）
+└── README.md
 ```
 
-> **说明**：`app/db/` 与 `app/models/` 暂未放置 `__init__.py`，依赖 Python 的命名空间包机制导入，可以正常工作；若想与其余目录保持一致，补两个空文件即可。
+> **说明**：`app/db/` 与 `app/models/` 没有放置 `__init__.py`，依赖 Python 的命名空间包机制导入，目前可以正常工作；若想与其余目录保持一致，补两个空文件即可。
 
-## 环境
-- Python 3.13.14
-- 操作系统：Windows 11
-- 数据库：MySQL（Day 4 起接入，Python 驱动为 `PyMySQL`）
+## 环境配置
 
-## 安装步骤
+### 1. 环境要求
 
-1.克隆项目
+- Python 3.13+
+- MySQL（已启动，且可创建数据库）
+- Git
+
+### 2. 克隆项目并安装依赖
+
 ```bash
-git clone https://github.com/yourname/FastAPI-week2.git
-cd FastAPI-week2
+git clone https://github.com/kokozzzzzz/fastapi-week2.git
+cd fastapi-week2
 ```
 
-2.创建虚拟环境
+创建并激活虚拟环境：
+
 ```bash
 python -m venv .venv
 ```
 
-3.激活虚拟环境
+Windows（CMD / PowerShell）：
 
-Windows:
 ```bash
 .venv\Scripts\activate
 ```
 
-macOS / Linux:
+Windows（Git Bash）：
+
+```bash
+source .venv/Scripts/activate
+```
+
+macOS / Linux：
+
 ```bash
 source .venv/bin/activate
 ```
 
-4.安装依赖
+安装依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-5.导出依赖
-```bash
-pip freeze > requirements.txt
-```
+### 3. 配置环境变量
 
-> **提示**：Windows PowerShell 的重定向默认生成 UTF-16 编码的文件，可能导致其他环境读取异常（Git 也会把它当二进制文件处理，无法正常 diff）。可改用 `pip freeze | Out-File -Encoding utf8 requirements.txt`。
->
-> 当前仓库中的 `requirements.txt` 已是 UTF-8（ASCII）编码，可直接使用。
-
-## 配置说明
-
-根目录的 `.env_example` 提供了环境变量模板，将其中内容复制为 `.env` 后填入真实值：
+复制模板并填入真实值：
 
 ```bash
 cp .env_example .env
@@ -185,277 +130,294 @@ cp .env_example .env
 
 ```env
 GITHUB_TOKEN=
+
 APP_NAME=
 DEBUG=
+
 DATABASE_URL=
+TEST_DATABASE_URL=
+
 SECRET_KEY=
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
 
-- **Day 3 已使用**：`APP_NAME`、`DEBUG`，由 `app/core/config.py` 的 `Settings` 类读取，分别对应字段 `app_name`、`debug`（`pydantic-settings` 默认大小写不敏感，`.env` 里写大写、代码里用小写即可）。
-- **Day 4 新增字段**：`DATABASE_URL`、`GITHUB_TOKEN`，对应 `database_url`、`github_token`。其中 `DATABASE_URL` 是 SQLAlchemy 连接串，格式为 `mysql+pymysql://用户名:密码@主机:端口/数据库名`，需要先在 MySQL 中建好这个数据库（表由应用启动时自动创建）；`GITHUB_TOKEN` 从 Day 6 起用于调用 GitHub API。
-- **Day 5 新增字段**：`SECRET_KEY`、`ALGORITHM`、`ACCESS_TOKEN_EXPIRE_MINUTES`，对应 `secret_key`、`algorithm`、`access_token_expire_minutes`。`SECRET_KEY` 是 JWT 的签名密钥，字段没有默认值，**必须填写**（缺失时启动会报错），建议用足够长的随机字符串；`ALGORITHM` 默认 `HS256`；`ACCESS_TOKEN_EXPIRE_MINUTES` 是 token 有效期（分钟），默认 30。
-- **Day 6 起 `GITHUB_TOKEN` 必填**：`app/api/external.py` 在模块导入时用 `load_dotenv()` + `os.getenv("GITHUB_TOKEN")` 直接读取（不是通过 `Settings.github_token`），未配置会直接 `raise ValueError`，应用无法启动。`load_dotenv()` 不带参数时会从该文件所在目录向上逐级查找 `.env`，因此能定位到项目根目录的 `.env`。
-- 也可以继续用 `os.getenv("XXX")` 读取配置，两种方式并存。
-- 确认 `.gitignore` 中包含 `.env`，防止密钥被提交至 Git；`.env_example` 只放变量名、不放真实值，可以提交。
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `GITHUB_TOKEN` | 是 | 调用 GitHub API 的 Token。`app/api/external.py` 在模块导入时读取，缺失会导致应用无法启动 |
+| `APP_NAME` | 否 | 应用名称，显示在 Swagger 文档标题中，默认 `FastAPI Week 2` |
+| `DEBUG` | 否 | 调试开关，默认 `true` |
+| `DATABASE_URL` | 是 | 主数据库连接串，格式见下方「数据库初始化」 |
+| `TEST_DATABASE_URL` | 运行测试时必填 | 测试数据库连接串，**必须与主数据库分开** |
+| `SECRET_KEY` | 是 | JWT 签名密钥，没有默认值，建议使用足够长的随机字符串 |
+| `ALGORITHM` | 否 | JWT 签名算法，默认 `HS256` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | 否 | Token 有效期（分钟），默认 `30` |
 
-> **⚠️ 安全提示**：Token 和 API Key 等同于密码，请勿直接写在代码中，也不要上传至 GitHub。
-
-> **注意**：`SettingsConfigDict(env_file=".env")` 中的路径是相对路径，相对**当前工作目录**解析；Day 6 的 `uploads/` 上传目录同样按当前工作目录创建。因此启动服务时请在项目根目录执行下面的命令，否则 `Settings` 会读不到 `.env`：多数字段会退回代码里的默认值，而 `secret_key` 没有默认值，Day 5 起会直接启动失败；`external.py` 的 `load_dotenv()` 虽然会从文件所在目录向上查找 `.env`，但 `uploads/` 仍会建在错误的目录下。
-
-## 运行方式
-
-**启动主应用（Day 3 分层结构 + Day 4 数据库 + Day 5 认证 + Day 6 文件上传 / 外部 API）：**
+生成一个随机 `SECRET_KEY`：
 
 ```bash
-python -m uvicorn app.main:app --reload
+python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-> **运行前准备（Day 4 起）**：先在本地启动 MySQL 服务并创建好 `.env` 中 `DATABASE_URL` 指向的数据库（例如 `CREATE DATABASE fastapi_week2 DEFAULT CHARSET utf8mb4;`），然后按下面的命令启动应用——`users` 表会在启动时由 `Base.metadata.create_all()` 自动创建，不需要手写建表 SQL。
+> **提示**：复制模板后不要保留空值。`DEBUG=` 留空时，pydantic 无法把空字符串解析为布尔值，应用会直接启动失败；不想配置的可选字段请删除对应行（`APP_NAME=` 留空只会得到空标题）。`GITHUB_TOKEN`、`DATABASE_URL`、`SECRET_KEY` 必须填写。
 
-> **⚠️ Day 5 表结构变更**：`User` 新增了 `password_hash` 列（非空），但 `create_all()` 只创建缺失的表，**不会修改已存在的表**。如果数据库里已经有 Day 4 建的 `users` 表，需要手动处理，例如：
+> **⚠️ 安全提示**：`.env` 中的 Token、数据库密码和 `SECRET_KEY` 等同于密码，不要提交到 Git。仓库的 `.gitignore` 已包含 `.env`；`.env_example` 只放变量名，不放真实值。
+
+> **注意**：`SettingsConfigDict(env_file=".env")` 按**当前工作目录**解析路径，因此请在项目根目录启动服务，否则会读不到 `.env`。`SECRET_KEY` 没有默认值，缺失时应用会直接启动失败。
+
+## 数据库初始化
+
+### 1. 创建数据库
+
+先启动 MySQL，然后创建主数据库和测试数据库：
+
+```sql
+CREATE DATABASE fastapi_week2 DEFAULT CHARACTER SET utf8mb4;
+CREATE DATABASE fastapi_week2_test DEFAULT CHARACTER SET utf8mb4;
+```
+
+### 2. 配置连接串
+
+在 `.env` 中填写（按实际用户名、密码、主机和端口修改）：
+
+```env
+DATABASE_URL=mysql+pymysql://root:your_password@127.0.0.1:3306/fastapi_week2
+TEST_DATABASE_URL=mysql+pymysql://root:your_password@127.0.0.1:3306/fastapi_week2_test
+```
+
+### 3. 自动建表
+
+应用启动时会执行 `Base.metadata.create_all(bind=engine)`，自动创建 `users` 表，不需要手写建表 SQL。
+
+> **⚠️ 表结构变更注意**：`create_all()` 只创建缺失的表，**不会修改已存在的表**。如果数据库中已有旧版 `users` 表（例如 Day 4 创建、没有 `password_hash` 列），需要手动处理：
 >
 > ```sql
 > ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) NOT NULL DEFAULT '';
 > ```
 >
-> 已有用户没有密码，补上空默认值后这些账号无法登录（需要重新注册或更新密码）；也可以直接删表让应用重建，但会丢失已有数据。项目目前尚未接入 Alembic 迁移工具。
+> 已有用户补上空默认值后无法登录，需要重新注册或更新密码。也可以删表让应用重建，但会丢失已有数据。项目目前尚未接入 Alembic 迁移工具。
 
-**启动 Day 1 / Day 2 的练习文件：**
+## 运行方式
+
+在**项目根目录**启动主应用：
 
 ```bash
-python -m uvicorn tests.day1_test:app --reload
-python -m uvicorn tests.day2_test:app --reload
+uvicorn app.main:app --reload
 ```
 
-**启动 Day 3 的练习文件：**
+如果 `uvicorn` 命令不可用，可以改用：
 
 ```bash
-python -m uvicorn tests.day3_time_demo:app --reload
-
-# 注意：该文件里的 FastAPI 实例变量名是 router，不是 app
-python -m uvicorn tests.day3_depends_demo:router --reload
+python -m uvicorn app.main:app --reload
 ```
 
 默认监听 `http://127.0.0.1:8000`，`--reload` 表示代码变更后自动重启。
 
-**访问交互式文档：**
+启动后可访问：
 
-- Swagger UI：http://127.0.0.1:8000/docs
-- ReDoc：http://127.0.0.1:8000/redoc
+- Swagger UI：<http://127.0.0.1:8000/docs>
+- ReDoc：<http://127.0.0.1:8000/redoc>
 
-**用 curl 测试接口（Day 1）：**
+> **提示**：`/users/`、`/files/`、`/health/` 带结尾斜杠，请求不带斜杠的路径会收到 307 重定向；`/auth/...`、`/external/...` 不带结尾斜杠。
 
-```bash
-# 路径参数
-curl http://127.0.0.1:8000/users/7
+## API 文档
 
-# 查询参数
-curl "http://127.0.0.1:8000/search?keyword=book&page=2&size=5"
+### 认证方式
 
-# 请求体
-curl -X POST http://127.0.0.1:8000/users \
-  -H "Content-Type: application/json" \
-  -d '{"name":"koko","age":23}'
+1. 调用 `POST /auth/register` 注册用户（JSON 请求体）。
+2. 调用 `POST /auth/login` 登录，注意使用**表单**数据（`application/x-www-form-urlencoded`，不是 JSON）。
+3. 登录成功后拿到 `access_token`，后续请求在请求头中携带：
+
+```text
+Authorization: Bearer <access_token>
 ```
 
-### Day 1 接口一览
+在 Swagger UI 中也可以点击右上角的 **Authorize**，填入用户名和密码，Swagger 会自动登录并保存 token，之后访问受保护接口会自动带上请求头。
 
-| 方法 | 路径 | 参数 | 说明 |
+### 接口列表
+
+| Method | Endpoint | 功能 | 认证 |
 | --- | --- | --- | --- |
-| GET | `/users/{user_id}` | 路径参数 `user_id: int` | 返回欢迎信息与用户 ID |
-| GET | `/search` | 查询参数 `keyword`（必填）、`page`（默认 1）、`size`（默认 10） | 演示带默认值的查询参数 |
-| POST | `/users` | 请求体 `UserCreate`：`name`、`age` | 演示 Pydantic 模型接收 JSON 请求体 |
+| POST | `/auth/register` | 注册 | 否 |
+| POST | `/auth/login` | 登录（表单） | 否 |
+| GET | `/auth/me` | 当前用户 | 是 |
+| POST | `/users/` | 创建用户 | 是 |
+| GET | `/users/` | 用户列表（分页） | 是 |
+| GET | `/users/{user_id}` | 用户详情 | 是 |
+| PUT | `/users/{user_id}` | 修改用户 | 是 |
+| DELETE | `/users/{user_id}` | 删除用户 | 是 |
+| POST | `/files/` | 上传文件 | 否 |
+| GET | `/external/github/{username}` | 外部 API：GitHub 用户信息 | 否 |
+| GET | `/health/` | 健康检查 | 否 |
+| GET | `/` | 根路径 | 否 |
 
-**用 curl 测试接口（Day 2）：**
+> **说明**：`POST /users/` 与 `POST /auth/register` 功能重叠，且 `/users/` 需要登录；日常注册请使用 `/auth/register`。
 
-```bash
-# 创建用户（重名返回 400）
-curl -X POST http://127.0.0.1:8000/users \
-  -H "Content-Type: application/json" \
-  -d '{"name":"koko","age":23}'
-
-# 分页查询
-curl "http://127.0.0.1:8000/users?page=1&size=10"
-
-# 查询单个（不存在返回 404）
-curl http://127.0.0.1:8000/users/1
-
-# 更新
-curl -X PUT http://127.0.0.1:8000/users/1 \
-  -H "Content-Type: application/json" \
-  -d '{"name":"koko2","age":24}'
-
-# 删除（成功返回 204）
-curl -X DELETE http://127.0.0.1:8000/users/1
-```
-
-### Day 2 接口一览
-
-| 方法 | 路径 | 参数 | 说明 |
-| --- | --- | --- | --- |
-| POST | `/users` | 请求体 `UserCreate`：`name`（1～50 字符）、`age`（0～150） | 创建用户，成功返回 201，用户名已存在返回 400 |
-| GET | `/users` | 查询参数 `page`（默认 1）、`size`（默认 10），取值 1～100 | 分页返回用户列表 |
-| GET | `/users/{user_id}` | 路径参数 `user_id`（须大于 0） | 返回单个用户，不存在返回 404 |
-| PUT | `/users/{user_id}` | 路径参数 `user_id` + 请求体 `UserUpdate`：`name`、`age` | 更新用户，不存在返回 404 |
-| DELETE | `/users/{user_id}` | 路径参数 `user_id` | 删除用户，成功返回 204，不存在返回 404 |
-
-> **提示**：Day 2 的数据保存在内存变量中，服务重启后用户列表会清空。
-
-**用 curl 测试接口（Day 3）：**
+### 请求示例
 
 ```bash
-# 根路径
-curl http://127.0.0.1:8000/
-
-# 健康检查
-curl http://127.0.0.1:8000/health/
-
-# 创建用户（重名返回 400）
-curl -X POST http://127.0.0.1:8000/users/ \
-  -H "Content-Type: application/json" \
-  -d '{"name":"koko","age":20}'
-
-# 分页查询
-curl "http://127.0.0.1:8000/users/?page=1&size=10"
-
-# 查询单个（不存在返回 404）
-curl http://127.0.0.1:8000/users/1
-
-# 更新（不存在返回 404）
-curl -X PUT http://127.0.0.1:8000/users/1 \
-  -H "Content-Type: application/json" \
-  -d '{"name":"koko2","age":20}'
-
-# 删除（成功返回 204，不存在返回 404）
-curl -X DELETE http://127.0.0.1:8000/users/1
-```
-
-### Day 3 接口一览
-
-| 方法 | 路径 | 参数 | 说明 |
-| --- | --- | --- | --- |
-| GET | `/` | 无 | 根路径，返回 `{"message": "FastAPI is running"}` |
-| GET | `/health/` | 无 | 健康检查，返回 `{"status": "ok"}` |
-| POST | `/users/` | 请求体 `UserCreate`：`name`（1～50 字符）、`age`（0～150） | 创建用户，成功返回 201，用户名已存在返回 400 |
-| GET | `/users/` | 查询参数 `page`（默认 1，≥1）、`size`（默认 10，取值 1～100） | 分页返回用户列表 |
-| GET | `/users/{user_id}` | 路径参数 `user_id` | 返回单个用户，不存在返回 404 |
-| PUT | `/users/{user_id}` | 路径参数 `user_id`（须大于 0）+ 请求体 `UserUpdate`：`name`、`age` | 更新用户，不存在返回 404 |
-| DELETE | `/users/{user_id}` | 路径参数 `user_id`（须大于 0） | 删除用户，成功返回 204，不存在返回 404 |
-
-> **注意**：因为 `APIRouter` 的 `prefix="/users"` 配合 `@router.get("/")`，实际路径带上了结尾斜杠。请求不带斜杠的 `/users`、`/health` 会收到 307 重定向，`curl` 需要加 `-L` 才会自动跟随，浏览器和 `/docs` 页面不受影响。
-
-> **说明**：每个请求的耗时都会打印在启动服务的控制台里，形如 `/users/: 0.0019s`。Day 6 起主应用改用 `log_request_time`，输出格式变为 `GET /users/ 200 3.12ms`，并在响应头中返回 `X-Process-Time`。
-
-> **提示**：Day 3 时数据保存在 `app/services/user_service.py` 的内存变量中，服务重启后会清空；Day 4 起已改为存入 MySQL，见下节。
-
-**用 curl 测试接口（Day 4）：**
-
-```bash
-# 创建用户（重名返回 400，数据写入 users 表）
-curl -X POST http://127.0.0.1:8000/users/ \
-  -H "Content-Type: application/json" \
-  -d '{"name":"koko","age":20}'
-
-# 分页查询（读的就是数据库里的数据）
-curl "http://127.0.0.1:8000/users/?page=1&size=10"
-
-# 重启服务后再查一次，数据依然存在（验证已落库）
-curl "http://127.0.0.1:8000/users/?page=1&size=10"
-```
-
-### Day 4 接口一览
-
-Day 4 改的是数据层，接口路径、参数与状态码与 Day 3 完全一致（见上表），只有下面几处差异：
-
-| 变化点 | 说明 |
-| --- | --- |
-| 数据存储 | 由内存变量改为 MySQL 的 `users` 表，服务重启后数据不丢失 |
-| 数据库会话 | 每个接口通过 `db: Session = Depends(get_db)` 注入会话，请求结束自动关闭 |
-| 路径参数 | `GET /users/{user_id}` 的 `user_id` 也要求大于 0（Day 3 未做校验） |
-| 建表 | 应用启动时自动执行 `Base.metadata.create_all()` 创建缺失的表 |
-
-> **提示**：Day 4 之后接口错误仍由路由层决定——找不到用户返回 404，创建重名返回 400，service 层只返回 `None` / `False`。
-
-**用 curl 测试接口（Day 5）：**
-
-```bash
-# 注册（重名返回 400）
+# 注册
 curl -X POST http://127.0.0.1:8000/auth/register \
   -H "Content-Type: application/json" \
   -d '{"name":"koko","password":"secret123","age":20}'
 
-# 登录：注意是表单数据（application/x-www-form-urlencoded），不是 JSON
+# 登录：表单数据，返回 {"access_token":"...","token_type":"bearer"}
 curl -X POST http://127.0.0.1:8000/auth/login \
   -d "username=koko&password=secret123"
-# 返回形如 {"access_token":"...","token_type":"bearer"}
 
-# 用登录拿到的 token 访问受保护接口
+# 当前用户
 curl http://127.0.0.1:8000/auth/me \
   -H "Authorization: Bearer <access_token>"
-```
 
-### Day 5 接口一览
+# 用户列表（需要登录）
+curl "http://127.0.0.1:8000/users/?page=1&size=10" \
+  -H "Authorization: Bearer <access_token>"
 
-| 方法 | 路径 | 参数 | 说明 |
-| --- | --- | --- | --- |
-| POST | `/auth/register` | 请求体 `UserCreate`：`name`（1～50 字符）、`password`（6～128 字符）、`age`（0～150） | 注册用户，成功返回 201，用户名已存在返回 400 |
-| POST | `/auth/login` | 表单 `username`、`password` | 登录，成功返回 `access_token` 与 `token_type`，账号或密码错误返回 401 |
-| GET | `/auth/me` | 请求头 `Authorization: Bearer <token>` | 返回当前登录用户，token 无效 / 过期返回 401 |
-| POST | `/users/` | 请求体 `UserCreate`（同注册，必须带 `password`） | 创建用户，成功 201，重名 400（与 `/auth/register` 功能重叠） |
-
-> **说明**：`/auth/register`、`/auth/login`、`/auth/me` 的路径没有结尾斜杠，不存在 `/users/` 那样的 307 重定向问题。
-
-> **提示**：Day 5 起 `UserCreate` 增加了 `password` 字段，Day 4 的创建用户示例需要补上 `"password":"secret123"`，否则返回 422；也可以直接改用 `/auth/register`。
-
-> **提示**：在 `/docs` 页面点击右上角的 **Authorize**，填入用户名和密码，Swagger 会自动调用 `/auth/login` 并保存 token，之后再访问受保护接口会自动带上 `Authorization` 头。
-
-> **提示**：token 默认 30 分钟后过期，过期后调用 `/auth/me` 返回 401，需要重新登录获取新 token。
-
-> **⚠️ 安全提示**：`SECRET_KEY` 等同于签发 token 的私钥，泄露后任何人都能伪造登录状态。不要把它写进代码或提交到 Git，生产环境应换成足够长的随机值并妥善保管。
-
-**用 curl 测试接口（Day 6）：**
-
-```bash
 # 上传文件（只允许 .txt / .md / .pdf，最大 5MB）
 curl -X POST http://127.0.0.1:8000/files/ \
   -F "file=@README.md"
-# 返回形如 {"filename":"README.md","stored_as":"<uuid>.md","size_bytes":25000}
 
-# 上传不支持的格式（返回 400）
-curl -X POST http://127.0.0.1:8000/files/ \
-  -F "file=@photo.png"
-
-# 调用外部 GitHub API
+# 外部 GitHub API
 curl http://127.0.0.1:8000/external/github/torvalds
-# 返回 {"username":...,"public_repos":...,"followers":...,"html_url":...}
-
-# 用户不存在时返回 404
-curl http://127.0.0.1:8000/external/github/this-user-should-not-exist-123456
 ```
 
-### Day 6 接口一览
+### 常见状态码
 
-| 方法 | 路径 | 参数 | 说明 |
-| --- | --- | --- | --- |
-| POST | `/files/` | multipart 表单字段 `file` | 上传文件，限 `.txt` / `.md` / `.pdf`、不超过 5MB，成功返回 201 及 `filename` / `stored_as` / `size_bytes`；格式不支持返回 400，超过 5MB 返回 413 |
-| GET | `/external/github/{username}` | 路径参数 `username` | 查询 GitHub 用户公开信息，返回 `username` / `public_repos` / `followers` / `html_url`；用户不存在返回 404，外部请求失败返回 502 |
+| 状态码 | 场景 |
+| --- | --- |
+| 201 | 创建成功（注册、创建用户、上传文件） |
+| 204 | 删除成功 |
+| 400 | 用户名已存在、文件格式不支持 |
+| 401 | 未登录、Token 无效 / 过期、账号或密码错误 |
+| 404 | 用户不存在、GitHub 用户不存在 |
+| 413 | 上传文件超过 5MB |
+| 422 | 请求参数 / 请求体校验失败 |
+| 502 | 外部 API 请求失败 |
 
-> **注意**：`/files/` 带结尾斜杠，请求 `/files` 会收到 307 重定向；`/external/github/{username}` 不带结尾斜杠。
+## 测试方式
 
-> **提示**：上传的文件以 UUID 重命名后保存在根目录 `uploads/` 下，原始文件名只出现在响应中；`uploads/` 已加入 `.gitignore`，不会误提交。
+在项目根目录执行：
 
-> **⚠️ 启动前提**：`.env` 中必须填写 `GITHUB_TOKEN`，否则 `app/api/external.py` 在导入时就会抛出 `ValueError`，整个应用无法启动。GitHub 的公开用户接口本身不强制认证，但带上 token 后限额更高。
+```bash
+pytest -v
+```
 
-> **提示**：CORS 已允许 `http://localhost:5173` 与 `http://127.0.0.1:5173` 跨域访问；如果前端换了端口，需要同步修改 `app/main.py` 中的 `allow_origins`。
+只运行某个测试文件：
+
+```bash
+pytest tests/test_auth.py -v
+```
+
+### 测试前提
+
+- `.env` 中的 `TEST_DATABASE_URL` 必须指向一个**独立的测试数据库**。
+- `GITHUB_TOKEN` 也必须配置：`tests/conftest.py` 会导入 `app.main`，而 `app/api/external.py` 在导入时就要求该变量存在。
+
+### 测试机制
+
+- `tests/conftest.py` 用 `TestClient(app)` 创建测试客户端，并通过 `app.dependency_overrides[get_db]` 把数据库依赖切换为测试库会话。
+- `reset_database` 是 `autouse=True` 的 fixture，**每条测试执行前都会 `drop_all` + `create_all`**，保证测试之间互不影响。
+- `auth_headers` fixture 会注册并登录测试用户，返回带 Token 的请求头，供需要认证的用例复用。
+
+> **⚠️ 警告**：测试会反复删除并重建测试库中的表。务必确认 `TEST_DATABASE_URL` 指向的是专用测试库，绝不能和 `DATABASE_URL` 相同，否则会清空开发数据。
+
+### 测试覆盖
+
+| 文件 | 覆盖内容 |
+| --- | --- |
+| `tests/test_health.py` | 健康检查、请求体字段校验 |
+| `tests/test_auth.py` | 注册成功 / 重名、登录成功 / 密码错误、`/auth/me` 无 Token / 有 Token |
+| `tests/test_users.py` | 未登录访问返回 401、登录后查询列表、查询不存在的用户返回 404 |
+| `tests/test_files.py` | 上传合法 `.txt` 返回 201、上传 `.exe` 返回 400 |
+
+> **提示**：上传测试会在 `uploads/` 目录留下测试文件；该目录已加入 `.gitignore`，不会提交到 Git。
+
+## 开发日志
+
+### Day 1：FastAPI 基础（路由、参数与请求体）
+
+- 创建 `FastAPI` 应用实例，理解 `app = FastAPI()` 与装饰器路由（`@app.get` / `@app.post`）。
+- 路径参数：`/users/{user_id}` 配合类型注解 `user_id: int`，自动完成参数解析与类型转换。
+- 查询参数：`/search?keyword=&page=&size=`，带默认值的参数（`page: int = 1`）变为可选。
+- 请求体：使用 Pydantic `BaseModel` 定义 `UserCreate`（name / age），POST 提交 JSON 自动校验并解析。
+- 通过 `uvicorn` 启动服务，使用内置交互式文档（`/docs`、`/redoc`）调试接口。
+
+### Day 2：内存 CRUD（分页、响应模型与异常处理）
+
+- 用模块级列表 `users` 配合自增变量 `next_id` 作为存储，数据只存在内存中，服务重启即清空。
+- 按用途拆分 Pydantic 模型：`UserCreate`（创建入参校验）、`UserResponse`（统一响应结构）、`UserUpdate`（更新入参）。
+- 用 `Field` 做字段级约束：`name` 限制 `min_length=1 / max_length=50`，`age` 限制 `gt=0 / lt=150`，非法值由 FastAPI 自动返回 422。
+- 分页查询：`/users?page=&size=` 使用 `Query(default=1, ge=1, le=100)`，通过列表切片返回当页数据。
+- 路径参数校验：`/users/{user_id}` 使用 `Path(gt=0)`，要求 ID 为正整数。
+- 每个接口用 `response_model` 声明响应结构，创建接口设置 `status_code=201`。
+- 异常处理：查找、更新、删除找不到用户时抛出 `HTTPException(status_code=404)`；创建时用户名重复返回 400。
+
+### Day 3：项目分层重构（APIRouter、配置管理与中间件）
+
+- **目录重构**：把 Day 1 / Day 2 的练习代码从主应用中剥离，主应用迁至 `app/`，按职责分层——`api/`（路由）、`schemas/`（数据模型）、`services/`（业务逻辑）、`core/`（配置与中间件）。
+- **APIRouter 拆分路由**：`app/api/users.py` 定义 `APIRouter(prefix="/users", tags=["Users"])`，`app/main.py` 通过 `app.include_router()` 注册。
+- **分层职责划分**：路由层只负责 HTTP 相关的事（参数校验、抛 `HTTPException`），业务逻辑下沉到 `app/services/user_service.py`；service 层用 `None` / `False` 表达“未找到”，由路由层决定返回什么错误码。
+- **配置管理**：`app/core/config.py` 用 `pydantic-settings` 的 `BaseSettings` 定义配置类，通过 `SettingsConfigDict(env_file=".env")` 自动读取 `.env`。
+- **中间件**：`app/core/middleware.py` 实现请求耗时统计，并在 `main.py` 中通过 `app.middleware("http")` 注册（Day 6 起主应用改用 `log_request_time`）。
+- **健康检查**：新增 `app/api/health.py`，提供 `/health/` 接口返回 `{"status": "ok"}`。
+- **应用元信息**：`FastAPI(title=setting.app_name, version="0.1.0")`，标题从配置读取。
+- **依赖注入练习**：用 `Depends(common_params)` 把公共查询参数抽成可复用的依赖函数。
+- **中间件练习**：单独练习了中间件的写法。
+- **修正 Day 2 遗留问题**：删除接口的路径随 `prefix="/users"` 统一为 `/users/{user_id}`。
+
+### Day 4：数据库接入（SQLAlchemy + MySQL）
+
+- **数据库连接层**：`app/db/base.py` 用 SQLAlchemy 2.0 的 `DeclarativeBase` 定义声明基类 `Base`；`app/db/session.py` 用 `create_engine(setting.database_url)` 创建引擎，再通过 `sessionmaker` 得到会话工厂 `SessionLocal`。
+- **会话依赖注入**：`get_db()` 是生成器函数，`yield` 出数据库会话、在 `finally` 中 `db.close()`；路由函数用 `db: Session = Depends(get_db)` 声明。
+- **ORM 模型**：`app/models/user.py` 用 `Mapped[...]` + `mapped_column()` 定义 `User`，映射到 `users` 表——`id`（主键、自增）、`name`（`String(50)`、唯一、非空）、`age`（非空）。
+- **自动建表**：`app/main.py` 中导入模型后执行 `Base.metadata.create_all(bind=engine)`，启动时自动创建缺失的表。
+- **服务层改造**：`user_service.py` 由内存列表改为数据库操作——分页用 `offset/limit`，查单个用 `filter(...).first()`，创建用 `db.add()` + `commit()` + `refresh()`，删除用 `db.delete()` + `commit()`。
+- **重名校验**：新增 `find_user_by_name()` 在创建前查重，同时 `name` 字段带 `unique=True` 作为数据库层兜底。
+- **响应模型适配**：`UserResponse` 增加 `model_config = ConfigDict(from_attributes=True)`，Pydantic 才能直接从 ORM 对象读取属性。
+
+### Day 5：用户认证（密码哈希 + JWT）
+
+- **密码哈希**：`app/core/security.py` 用 `pwdlib` 的 `PasswordHash.recommended()`（底层为 Argon2）实现 `hash_password()` / `verify_password()`，数据库只保存哈希值。
+- **JWT 签发**：`create_access_token(user_id)` 用 `PyJWT` 生成 token，payload 包含 `sub`（用户 ID）和 `exp`（UTC 过期时间）；有效期读 `ACCESS_TOKEN_EXPIRE_MINUTES`，签名密钥读 `SECRET_KEY`。
+- **JWT 校验**：`decode_access_token(token)` 验签并解析 payload，捕获 `jwt.InvalidTokenError` 后统一返回 `None`。
+- **数据模型调整**：`User` 增加 `password_hash` 列；`UserCreate` 增加 `password` 字段；`UserResponse` 不含密码相关字段。
+- **注册**：`auth_service.register_user()` 先查重，再哈希密码后写库；`POST /auth/register` 成功返回 201，用户名已存在返回 400。
+- **登录**：`POST /auth/login` 使用 `OAuth2PasswordRequestForm` 接收**表单**数据，成功返回 `{"access_token": ..., "token_type": "bearer"}`，账号或密码错误返回 401。
+- **当前用户依赖**：`app/core/dependencies.py` 定义 `OAuth2PasswordBearer(tokenUrl="/auth/login")` 与 `get_current_user()`——从 `Authorization: Bearer <token>` 取出 token，解码后查用户；无效 token 或用户不存在都返回 401。
+- **受保护接口**：`GET /auth/me` 通过 `Depends(get_current_user)` 返回当前登录用户。
+- **复用已有逻辑**：`auth_service` 复用 `user_service.find_user_by_name()`，`get_current_user` 复用 `user_service.find_user()`。
+- **待办**：`app/schemas/auth.py` 中的 `LoginRequest` 目前未被使用（登录实际使用表单）。
+
+### Day 6：文件上传、外部 API 调用与 CORS
+
+- **文件上传接口**：`POST /files/` 用 `UploadFile = File(...)` 接收 multipart 表单文件，成功返回 201。
+- **上传目录**：`UPLOAD_DIR = Path("uploads")`，模块导入时自动创建；`uploads/` 已加入 `.gitignore`。
+- **扩展名白名单**：只允许 `.txt`、`.md`、`.pdf`，其余格式返回 400。
+- **大小限制**：`MAX_FILE_SIZE = 5 * 1024 * 1024`，按 1MB 分块读取并累计大小，超过 5MB 返回 413，并删除已写入的不完整文件。
+- **存储文件名**：使用 `uuid4().hex` + 原扩展名，避免路径穿越和同名覆盖；响应返回 `filename`、`stored_as`、`size_bytes`。
+- **资源释放**：成功、格式不支持、文件过大三种情况都会 `await file.close()`。
+- **外部 API 调用**：`GET /external/github/{username}` 用 `httpx.AsyncClient(timeout=10.0)` 异步请求 GitHub 的 `/users/{username}` 接口。
+- **请求头**：GitHub API 要求必须带 `User-Agent`；同时通过 `Authorization: token <GITHUB_TOKEN>` 认证，提高速率限制。
+- **错误映射**：网络异常 / 连接失败返回 502，GitHub 返回 404 时映射为 404，其他非 2xx 返回 502；响应只挑选 `login`、`public_repos`、`followers`、`html_url` 四个字段。
+- **配置读取**：`external.py` 在模块导入时 `load_dotenv()` 后读取 `os.getenv("GITHUB_TOKEN")`，缺失则直接 `raise ValueError`，应用启动即失败。
+- **CORS**：`main.py` 通过 `CORSMiddleware` 允许 `http://localhost:5173` 与 `http://127.0.0.1:5173`（Vite 开发服务器默认端口）跨域访问。
+- **请求日志中间件升级**：`log_request_time` 使用 `time.perf_counter()` 计时，在响应头写入 `X-Process-Time`（单位 ms），并打印 `方法 路径 状态码 耗时`，形如 `GET /users/ 200 3.12ms`。
+
+### Day 7：pytest 自动化测试
+
+- **测试基础设施**：`tests/conftest.py` 用 `TestClient(app)` 创建客户端，并用 `app.dependency_overrides[get_db]` 把数据库切换为测试库。
+- **独立测试库**：`Settings` 新增 `test_database_url`，`.env_example` 同步新增 `TEST_DATABASE_URL`。
+- **数据隔离**：`reset_database` fixture 标记 `autouse=True`，每条测试前执行 `drop_all` + `create_all`。
+- **认证 fixture**：`auth_headers` 注册并登录测试用户，返回带 Token 的请求头。
+- **接口保护**：`/users` 路由整体挂载 `dependencies=[Depends(get_current_user)]`，测试中未登录访问返回 401。
+- **测试用例**：覆盖健康检查、注册 / 重名、登录成功 / 密码错误、`/auth/me` 有无 Token、用户列表、用户不存在、合法 / 非法文件上传。
 
 ## 更新依赖
 
-如果你新增了第三方库，请重新导出依赖清单：
+新增第三方库后，重新导出依赖清单：
 
 ```bash
 pip freeze > requirements.txt
 ```
 
-导出后请确认文件编码为 UTF-8（见上方「安装步骤」中的提示），否则 Git 会将其识别为二进制文件。
+> **提示**：Windows PowerShell 的重定向默认生成 UTF-16 编码的文件，可能导致其他环境读取异常。可改用 `pip freeze | Out-File -Encoding utf8 requirements.txt`。当前仓库中的 `requirements.txt` 为 UTF-8（ASCII）编码。
