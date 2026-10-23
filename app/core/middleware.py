@@ -1,7 +1,7 @@
 import time
 from fastapi import Request
 
-
+# 终端中显示运行时间
 async def add_process_time(
     request: Request,
     call_next,
@@ -20,6 +20,7 @@ async def add_process_time(
     return response
 
 
+# header中体现运行时间
 async def log_request_time(request: Request, call_next):
     start = time.perf_counter()
 

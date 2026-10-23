@@ -18,6 +18,8 @@ from app.api.external import router as external_router
 
 from app.api.files import router as files_router
 
+from app.api.cache import router as cache_router
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -63,3 +65,6 @@ app.include_router(external_router)
 
 # 文件router
 app.include_router(files_router)
+
+# 缓存router
+app.include_router(cache_router)

@@ -1,6 +1,6 @@
 # FastAPI Week 2
 
-一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用与 pytest 接口测试，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
+一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试与 Redis 缓存，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
 
 - 主应用入口：`app/main.py`
 - 交互式接口文档：<http://127.0.0.1:8000/docs>
@@ -14,6 +14,7 @@
 | Web 框架 | FastAPI |
 | 数据校验 / 配置 | Pydantic、pydantic-settings |
 | ORM / 数据库 | SQLAlchemy 2.x、MySQL、PyMySQL |
+| 缓存 | Redis、redis.asyncio |
 | 认证 | JWT（PyJWT）、Argon2 密码哈希（pwdlib） |
 | 外部请求 | httpx |
 | 服务器 | Uvicorn |
@@ -26,6 +27,7 @@
 - **接口保护**：`/users` 路由整体挂载 `get_current_user` 依赖，未携带有效 token 的请求统一返回 401。
 - **文件上传**：仅允许 `.txt` / `.md` / `.pdf`，单文件最大 5MB；文件以 UUID 重命名保存至 `uploads/`，原始文件名随响应返回。
 - **外部 API**：通过 `httpx` 异步调用 GitHub 用户接口，返回精简后的公开信息，并映射 404 / 502 错误。
+- **Redis 缓存**：基于 `redis.asyncio` 的异步客户端，支持缓存写入（60 秒 TTL）、读取、删除与 TTL 查询；`/cache/demo` 演示 Cache-Aside 模式。
 - **基础设施**：健康检查、请求耗时中间件（响应头 `X-Process-Time`）、CORS（允许 Vite 开发服务器跨域）。
 - **自动化测试**：pytest + TestClient，使用独立测试数据库，覆盖认证、用户、文件上传与健康检查。
 
@@ -37,10 +39,13 @@ FastAPI-week2/
 │   ├── main.py                   # 应用入口：创建 FastAPI 实例、注册中间件 / CORS / 路由、自动建表
 │   ├── api/                      # 路由层：只处理 HTTP 请求与响应
 │   │   ├── auth.py               # /auth 注册、登录、当前用户
+│   │   ├── cache.py              # /cache 缓存读写与 Cache-Aside 演示
 │   │   ├── external.py           # /external 调用 GitHub API
 │   │   ├── files.py              # /files 文件上传
 │   │   ├── health.py             # /health/ 健康检查
 │   │   └── users.py              # /users 用户相关接口（整体需要登录）
+│   ├── cache/                    # 缓存层
+│   │   └── client.py             # 全局 redis.asyncio 客户端
 │   ├── core/                     # 基础设施层
 │   │   ├── config.py             # Settings：从 .env 读取配置
 │   │   ├── dependencies.py       # OAuth2PasswordBearer + get_current_user
@@ -65,6 +70,9 @@ FastAPI-week2/
 │   ├── test_health.py            # 健康检查与参数校验测试
 │   └── test_users.py             # 用户接口认证与查询测试
 │
+├── examples/
+│   └── redis_demo.py             # Redis 基础操作练习脚本（独立运行，不参与应用）
+│
 ├── conftest.py                   # 空文件，让 pytest 把项目根加入 sys.path
 ├── requirements.txt              # 固定版本的依赖清单
 ├── .env_example                  # 环境变量模板（可提交）
@@ -81,6 +89,7 @@ FastAPI-week2/
 
 - Python 3.13+
 - MySQL（已启动，且可创建数据库）
+- Redis（已启动，默认 `localhost:6379`）
 - Git
 
 ### 2. 克隆项目并安装依赖
@@ -140,6 +149,10 @@ TEST_DATABASE_URL=
 SECRET_KEY=
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
 ```
 
 | 变量 | 必填 | 说明 |
@@ -152,6 +165,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 | `SECRET_KEY` | 是 | JWT 签名密钥，没有默认值，建议使用足够长的随机字符串 |
 | `ALGORITHM` | 否 | JWT 签名算法，默认 `HS256` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | 否 | Token 有效期（分钟），默认 `30` |
+| `REDIS_HOST` | 否 | Redis 主机，默认 `localhost` |
+| `REDIS_PORT` | 否 | Redis 端口，默认 `6379` |
+| `REDIS_DB` | 否 | Redis 逻辑数据库编号，默认 `0` |
 
 生成一个随机 `SECRET_KEY`：
 
@@ -197,6 +213,43 @@ TEST_DATABASE_URL=mysql+pymysql://root:your_password@127.0.0.1:3306/fastapi_week
 >
 > 已有用户补上空默认值后无法登录，需要重新注册或更新密码。也可以删表让应用重建，但会丢失已有数据。项目目前尚未接入 Alembic 迁移工具。
 
+## Redis 缓存
+
+### 1. 启动 Redis
+
+本地需要先启动 Redis，默认连接 `localhost:6379`。Windows 可用 Docker Desktop、WSL 或 Memurai；Docker 方式：
+
+```bash
+docker run -d --name redis-dev -p 6379:6379 redis:7
+```
+
+连接参数在 `.env` 中通过 `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` 配置（见上方环境变量表）。
+
+### 2. 客户端
+
+`app/cache/client.py` 使用 `redis.asyncio.Redis` 创建全局异步客户端：
+
+```python
+redis_client = redis.Redis(
+    host=setting.redis_host,
+    port=setting.redis_port,
+    db=setting.redis_db,
+    decode_responses=True,
+)
+```
+
+`decode_responses=True` 让 `get()` 直接返回字符串而不是 `bytes`。
+
+### 3. 缓存接口
+
+`app/api/cache.py` 提供一组练习接口：
+
+- `/cache/test/{key}` 的 POST / GET / DELETE 分别写入、读取、删除缓存，写入固定 TTL 60 秒；POST 的 `value` 是**查询参数**，不是请求体。
+- `GET /cache/test/{key}/ttl` 返回剩余过期时间：正数为剩余秒数，`-1` 表示永不过期，`-2` 表示 key 不存在。
+- `GET /cache/demo` 演示 Cache-Aside 模式：首次请求用 `asyncio.sleep(2)` 模拟慢查询并写入 60 秒缓存，期间再次请求直接命中 Redis；响应中的 `source` 字段区分 `redis` 与 `slow source`。
+
+> **注意**：Redis 客户端在模块导入时创建，但连接是惰性的——Redis 未启动时应用仍能启动，访问 `/cache/*` 接口才会返回 500。`examples/redis_demo.py` 是独立的同步客户端练习脚本（`set` / `get` / `ex` / `ttl`），不参与应用运行。
+
 ## 运行方式
 
 在**项目根目录**启动主应用：
@@ -218,7 +271,7 @@ python -m uvicorn app.main:app --reload
 - Swagger UI：<http://127.0.0.1:8000/docs>
 - ReDoc：<http://127.0.0.1:8000/redoc>
 
-> **提示**：`/users/`、`/files/`、`/health/` 带结尾斜杠，请求不带斜杠的路径会收到 307 重定向；`/auth/...`、`/external/...` 不带结尾斜杠。
+> **提示**：`/users/`、`/files/`、`/health/` 带结尾斜杠，请求不带斜杠的路径会收到 307 重定向；`/auth/...`、`/external/...`、`/cache/...` 不带结尾斜杠。
 
 ## API 文档
 
@@ -248,6 +301,11 @@ Authorization: Bearer <access_token>
 | DELETE | `/users/{user_id}` | 删除用户 | 是 |
 | POST | `/files/` | 上传文件 | 否 |
 | GET | `/external/github/{username}` | 外部 API：GitHub 用户信息 | 否 |
+| POST | `/cache/test/{key}` | 写入缓存（TTL 60 秒） | 否 |
+| GET | `/cache/test/{key}` | 读取缓存 | 否 |
+| GET | `/cache/test/{key}/ttl` | 查看剩余 TTL | 否 |
+| DELETE | `/cache/test/{key}` | 删除缓存 | 否 |
+| GET | `/cache/demo` | Cache-Aside 演示 | 否 |
 | GET | `/health/` | 健康检查 | 否 |
 | GET | `/` | 根路径 | 否 |
 
@@ -279,6 +337,17 @@ curl -X POST http://127.0.0.1:8000/files/ \
 
 # 外部 GitHub API
 curl http://127.0.0.1:8000/external/github/torvalds
+
+# 写入缓存：value 是查询参数，60 秒后过期
+curl -X POST "http://127.0.0.1:8000/cache/test/name?value=koko"
+
+# 读取、查看 TTL、删除
+curl http://127.0.0.1:8000/cache/test/name
+curl http://127.0.0.1:8000/cache/test/name/ttl
+curl -X DELETE http://127.0.0.1:8000/cache/test/name
+
+# 缓存旁路演示：首次请求慢，60 秒内再次请求命中缓存
+curl http://127.0.0.1:8000/cache/demo
 ```
 
 ### 常见状态码
@@ -292,6 +361,7 @@ curl http://127.0.0.1:8000/external/github/torvalds
 | 404 | 用户不存在、GitHub 用户不存在 |
 | 413 | 上传文件超过 5MB |
 | 422 | 请求参数 / 请求体校验失败 |
+| 500 | 访问 `/cache/*` 时 Redis 未启动或连接失败 |
 | 502 | 外部 API 请求失败 |
 
 ## 测试方式
@@ -331,6 +401,8 @@ pytest tests/test_auth.py -v
 | `tests/test_files.py` | 上传合法 `.txt` 返回 201、上传 `.exe` 返回 400 |
 
 > **提示**：上传测试会在 `uploads/` 目录留下测试文件；该目录已加入 `.gitignore`，不会提交到 Git。
+
+> **提示**：`/cache/*` 接口依赖真实 Redis，目前没有对应的 pytest 用例。
 
 ## 开发日志
 
@@ -412,6 +484,17 @@ pytest tests/test_auth.py -v
 - **接口保护**：`/users` 路由整体挂载 `dependencies=[Depends(get_current_user)]`，测试中未登录访问返回 401。
 - **测试用例**：覆盖健康检查、注册 / 重名、登录成功 / 密码错误、`/auth/me` 有无 Token、用户列表、用户不存在、合法 / 非法文件上传。
 
+### Day 8：Redis 缓存
+
+- **配置**：`Settings` 新增 `redis_host` / `redis_port` / `redis_db`，`.env_example` 同步新增三个变量。
+- **异步客户端**：`app/cache/client.py` 用 `redis.asyncio.Redis` 创建全局客户端，开启 `decode_responses=True`，读取结果直接为字符串。
+- **缓存读写接口**：`app/api/cache.py` 提供 `/cache/test/{key}` 的写入（`ex=60`）、读取、删除，以及 `/cache/test/{key}/ttl` 查询剩余过期时间。
+- **写入参数**：`POST /cache/test/{key}` 的 `value` 定义为普通函数参数，实际作为查询参数传入，而不是 JSON 请求体。
+- **缓存未命中**：读取接口在 key 不存在时返回 `{"hit": false, "value": null}`。
+- **TTL 语义**：直接透传 Redis `TTL` 的结果——正数为剩余秒数，`-1` 表示永不过期，`-2` 表示 key 不存在。
+- **缓存旁路演示**：`GET /cache/demo` 先查缓存，未命中时用 `asyncio.sleep(2)` 模拟慢查询，写入 60 秒缓存后再返回，响应中的 `source` 字段区分 `redis` 与 `slow source`。
+- **独立练习脚本**：`examples/redis_demo.py` 用同步客户端演示 `set` / `get` / `ex` / `ttl` 的基本用法，不参与应用运行。
+
 ## 更新依赖
 
 新增第三方库后，重新导出依赖清单：
@@ -420,4 +503,4 @@ pytest tests/test_auth.py -v
 pip freeze > requirements.txt
 ```
 
-> **提示**：Windows PowerShell 的重定向默认生成 UTF-16 编码的文件，可能导致其他环境读取异常。可改用 `pip freeze | Out-File -Encoding utf8 requirements.txt`。当前仓库中的 `requirements.txt` 为 UTF-8（ASCII）编码。
+> **提示**：Windows PowerShell 的重定向默认生成 UTF-16 编码的文件，Git 会把它当成二进制文件，diff 不可读，部分工具也可能读取异常。可改用 `pip freeze | Out-File -Encoding utf8 requirements.txt`。当前仓库中的 `requirements.txt` 是 UTF-16 LE（带 BOM），建议重新导出为 UTF-8。
