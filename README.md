@@ -28,6 +28,7 @@
 - **文件上传**：仅允许 `.txt` / `.md` / `.pdf`，单文件最大 5MB；文件以 UUID 重命名保存至 `uploads/`，原始文件名随响应返回。
 - **外部 API**：通过 `httpx` 异步调用 GitHub 用户接口，返回精简后的公开信息，并映射 404 / 502 错误。
 - **Redis 缓存**：基于 `redis.asyncio` 的异步客户端，支持缓存写入（60 秒 TTL）、读取、删除与 TTL 查询；`/cache/demo` 演示 Cache-Aside 模式。
+- **用户详情缓存**：`GET /users/{user_id}` 采用 Cache-Aside，key 为 `user:{user_id}`，TTL 由 `USER_CACHE_TTL` 控制（默认 60 秒）；响应头 `X-Cache` 标记 `HIT` / `MISS`，更新或删除用户时自动使缓存失效。
 - **基础设施**：健康检查、请求耗时中间件（响应头 `X-Process-Time`）、CORS（允许 Vite 开发服务器跨域）。
 - **自动化测试**：pytest + TestClient，使用独立测试数据库，覆盖认证、用户、文件上传与健康检查。
 
@@ -43,9 +44,10 @@ FastAPI-week2/
 │   │   ├── external.py           # /external 调用 GitHub API
 │   │   ├── files.py              # /files 文件上传
 │   │   ├── health.py             # /health/ 健康检查
-│   │   └── users.py              # /users 用户相关接口（整体需要登录）
+│   │   └── users.py              # /users 用户相关接口（整体需要登录，详情接口带缓存）
 │   ├── cache/                    # 缓存层
-│   │   └── client.py             # 全局 redis.asyncio 客户端
+│   │   ├── client.py             # 全局 redis.asyncio 客户端
+│   │   └── user_cache.py         # 用户详情缓存：读取 / 写入 / 删除（key = user:{id}）
 │   ├── core/                     # 基础设施层
 │   │   ├── config.py             # Settings：从 .env 读取配置
 │   │   ├── dependencies.py       # OAuth2PasswordBearer + get_current_user
@@ -168,6 +170,7 @@ REDIS_DB=0
 | `REDIS_HOST` | 否 | Redis 主机，默认 `localhost` |
 | `REDIS_PORT` | 否 | Redis 端口，默认 `6379` |
 | `REDIS_DB` | 否 | Redis 逻辑数据库编号，默认 `0` |
+| `USER_CACHE_TTL` | 否 | 用户详情缓存过期时间（秒），默认 `60`。`.env_example` 暂未列出该变量，需要修改默认值时手动添加到 `.env` |
 
 生成一个随机 `SECRET_KEY`：
 
@@ -248,7 +251,17 @@ redis_client = redis.Redis(
 - `GET /cache/test/{key}/ttl` 返回剩余过期时间：正数为剩余秒数，`-1` 表示永不过期，`-2` 表示 key 不存在。
 - `GET /cache/demo` 演示 Cache-Aside 模式：首次请求用 `asyncio.sleep(2)` 模拟慢查询并写入 60 秒缓存，期间再次请求直接命中 Redis；响应中的 `source` 字段区分 `redis` 与 `slow source`。
 
-> **注意**：Redis 客户端在模块导入时创建，但连接是惰性的——Redis 未启动时应用仍能启动，访问 `/cache/*` 接口才会返回 500。`examples/redis_demo.py` 是独立的同步客户端练习脚本（`set` / `get` / `ex` / `ttl`），不参与应用运行。
+> **注意**：Redis 客户端在模块导入时创建，但连接是惰性的——Redis 未启动时应用仍能启动，访问 `/cache/*` 或 `GET /users/{user_id}` 才会返回 500。`examples/redis_demo.py` 是独立的同步客户端练习脚本（`set` / `get` / `ex` / `ttl`），不参与应用运行。
+
+### 4. 用户详情缓存
+
+`app/cache/user_cache.py` 为 `GET /users/{user_id}` 提供 Cache-Aside 缓存：
+
+- key 为 `user:{user_id}`，value 是包含 `id` / `name` / `age` 的 JSON 字符串，TTL 读取 `USER_CACHE_TTL`（默认 60 秒）。
+- 命中缓存：直接返回缓存数据，响应头 `X-Cache: HIT`。
+- 未命中：查询 MySQL，写入缓存后返回，响应头 `X-Cache: MISS`；用户不存在仍返回 404。
+- 更新（`PUT`）或删除（`DELETE`）用户成功后调用 `delete_user_cache()` 使缓存失效。
+- 绕过接口直接修改数据库不会同步缓存，最多读到 TTL 时间内的旧数据。
 
 ## 运行方式
 
@@ -296,7 +309,7 @@ Authorization: Bearer <access_token>
 | GET | `/auth/me` | 当前用户 | 是 |
 | POST | `/users/` | 创建用户 | 是 |
 | GET | `/users/` | 用户列表（分页） | 是 |
-| GET | `/users/{user_id}` | 用户详情 | 是 |
+| GET | `/users/{user_id}` | 用户详情（Cache-Aside 缓存） | 是 |
 | PUT | `/users/{user_id}` | 修改用户 | 是 |
 | DELETE | `/users/{user_id}` | 删除用户 | 是 |
 | POST | `/files/` | 上传文件 | 否 |
@@ -331,6 +344,10 @@ curl http://127.0.0.1:8000/auth/me \
 curl "http://127.0.0.1:8000/users/?page=1&size=10" \
   -H "Authorization: Bearer <access_token>"
 
+# 用户详情：首次 X-Cache: MISS，60 秒内再次请求 X-Cache: HIT
+curl -i http://127.0.0.1:8000/users/1 \
+  -H "Authorization: Bearer <access_token>"
+
 # 上传文件（只允许 .txt / .md / .pdf，最大 5MB）
 curl -X POST http://127.0.0.1:8000/files/ \
   -F "file=@README.md"
@@ -361,7 +378,7 @@ curl http://127.0.0.1:8000/cache/demo
 | 404 | 用户不存在、GitHub 用户不存在 |
 | 413 | 上传文件超过 5MB |
 | 422 | 请求参数 / 请求体校验失败 |
-| 500 | 访问 `/cache/*` 时 Redis 未启动或连接失败 |
+| 500 | 访问 `/cache/*` 或 `GET /users/{user_id}` 时 Redis 未启动或连接失败 |
 | 502 | 外部 API 请求失败 |
 
 ## 测试方式
@@ -382,6 +399,7 @@ pytest tests/test_auth.py -v
 
 - `.env` 中的 `TEST_DATABASE_URL` 必须指向一个**独立的测试数据库**。
 - `GITHUB_TOKEN` 也必须配置：`tests/conftest.py` 会导入 `app.main`，而 `app/api/external.py` 在导入时就要求该变量存在。
+- Redis 必须已启动：`GET /users/{user_id}` 会先读缓存，`test_get_user_not_found` 依赖 Redis 连接。
 
 ### 测试机制
 
@@ -397,12 +415,14 @@ pytest tests/test_auth.py -v
 | --- | --- |
 | `tests/test_health.py` | 健康检查、请求体字段校验 |
 | `tests/test_auth.py` | 注册成功 / 重名、登录成功 / 密码错误、`/auth/me` 无 Token / 有 Token |
-| `tests/test_users.py` | 未登录访问返回 401、登录后查询列表、查询不存在的用户返回 404 |
+| `tests/test_users.py` | 未登录访问返回 401、登录后查询列表、查询不存在的用户返回 404（先读缓存未命中，再查库） |
 | `tests/test_files.py` | 上传合法 `.txt` 返回 201、上传 `.exe` 返回 400 |
 
 > **提示**：上传测试会在 `uploads/` 目录留下测试文件；该目录已加入 `.gitignore`，不会提交到 Git。
 
-> **提示**：`/cache/*` 接口依赖真实 Redis，目前没有对应的 pytest 用例。
+> **提示**：`GET /users/{user_id}` 与 `/cache/*` 依赖真实 Redis；目前没有专门覆盖缓存命中 / 失效的 pytest 用例。
+
+> **提示**：`reset_database` 只重建测试数据库，**不会清理 Redis**。若用例涉及已缓存的用户，需手动删除对应 key，否则可能读到上一条用例留下的数据。
 
 ## 开发日志
 
@@ -494,6 +514,16 @@ pytest tests/test_auth.py -v
 - **TTL 语义**：直接透传 Redis `TTL` 的结果——正数为剩余秒数，`-1` 表示永不过期，`-2` 表示 key 不存在。
 - **缓存旁路演示**：`GET /cache/demo` 先查缓存，未命中时用 `asyncio.sleep(2)` 模拟慢查询，写入 60 秒缓存后再返回，响应中的 `source` 字段区分 `redis` 与 `slow source`。
 - **独立练习脚本**：`examples/redis_demo.py` 用同步客户端演示 `set` / `get` / `ex` / `ttl` 的基本用法，不参与应用运行。
+
+### Day 9：用户详情缓存（Cache-Aside 落地）
+
+- **缓存模块**：新增 `app/cache/user_cache.py`，封装 `set_user_cache()` / `get_user_cache()` / `delete_user_cache()`，key 由 `user_cache_key(user_id)` 统一生成，格式为 `user:{user_id}`。
+- **序列化**：缓存值是 JSON 字符串（`json.dumps` / `json.loads`），只保存 `id`、`name`、`age` 三个字段。
+- **TTL 配置**：`Settings` 新增 `user_cache_ttl`，默认 60 秒；`.env_example` 暂未同步该变量。
+- **读缓存**：`GET /users/{user_id}` 改为 `async`，先查 Redis——命中直接返回并设置 `X-Cache: HIT`；未命中查 MySQL、写入缓存后返回，设置 `X-Cache: MISS`。
+- **未命中语义**：`get_user_cache()` 在 key 不存在时返回 `None`，由路由层继续查库并判断 404。
+- **缓存失效**：`PUT` 与 `DELETE /users/{user_id}` 也改为 `async`，数据库操作成功后调用 `delete_user_cache()`，避免读到旧数据。
+- **副作用**：用户详情接口从此依赖 Redis；本地调试与 pytest 都需要先启动 Redis。
 
 ## 更新依赖
 

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
+    user_cache_ttl: int = 60
 
     model_config = SettingsConfigDict(
         env_file=".env",

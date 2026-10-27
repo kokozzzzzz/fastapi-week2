@@ -4,8 +4,10 @@ from fastapi import (
     HTTPException,
     Path,
     Query,
+    Response
 )
 
+from app.cache.user_cache import delete_user_cache, get_user_cache, set_user_cache
 from app.core.dependencies import get_current_user
 from app.db.session import get_db
 from app.schemas.user import (
@@ -71,10 +73,18 @@ def get_users(
     "/{user_id}",
     response_model=UserResponse,
 )
-def get_user(
+async def get_user(
     user_id: int = Path(gt=0),
+    response: Response = None,
     db: Session = Depends(get_db)
 ):
+    # 查cache缓存
+    cached_data = await get_user_cache(user_id)
+
+    if cached_data is not None:
+        response.headers["X-Cache"] = "HIT"
+        return cached_data
+    
     user = user_service.find_user(db,user_id)
 
     if user is None:
@@ -82,6 +92,18 @@ def get_user(
             status_code=404,
             detail="未找到用户",
         )
+
+    data = {
+        "id": user.id,
+        "name": user.name,
+        "age": user.age,
+    }
+
+    await set_user_cache(
+        user_id,
+        data
+    )
+    response.headers["X-Cache"] = "MISS"
 
     return user
 
@@ -91,7 +113,7 @@ def get_user(
     "/{user_id}",
     response_model=UserResponse,
 )
-def update_user(
+async def update_user(
     user_id: int = Path(gt=0),
     data: UserUpdate = None,
     db: Session = Depends(get_db)
@@ -102,6 +124,9 @@ def update_user(
             status_code=404,
             detail="用户未找到"
         )
+
+    await delete_user_cache(user_id)
+    
     return user
 
 # 删除用户
@@ -109,13 +134,16 @@ def update_user(
     "/{user_id}",
     status_code = 204
 )
-def delete_user(
+async def delete_user(
     user_id: int = Path(gt=0),
     db: Session =Depends(get_db)
 ):
     success = user_service.delete_user(db,user_id)
     if not success:
         raise HTTPException(status_code=404, detail="用户未找到")
+
+    await delete_user_cache(user_id)
+    
     return None
 
 
