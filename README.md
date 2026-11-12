@@ -1,6 +1,6 @@
 # FastAPI Week 2
 
-一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试与 Redis 缓存，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
+一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存与 Docker 容器化，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
 
 - 主应用入口：`app/main.py`
 - 交互式接口文档：<http://127.0.0.1:8000/docs>
@@ -18,6 +18,7 @@
 | 认证 | JWT（PyJWT）、Argon2 密码哈希（pwdlib） |
 | 外部请求 | httpx |
 | 服务器 | Uvicorn |
+| 容器化 | Docker |
 | 测试 | pytest、FastAPI TestClient |
 
 ## 功能
@@ -77,6 +78,8 @@ FastAPI-week2/
 │
 ├── conftest.py                   # 空文件，让 pytest 把项目根加入 sys.path
 ├── requirements.txt              # 固定版本的依赖清单
+├── Dockerfile                    # 镜像构建文件（python:3.13-slim + uvicorn）
+├── .dockerignore                 # 构建上下文排除规则（.venv、.env、uploads 等）
 ├── .env_example                  # 环境变量模板（可提交）
 ├── .env                          # 本地私有配置（不提交）
 ├── uploads/                      # 上传文件保存目录（运行时自动创建，已忽略）
@@ -93,6 +96,7 @@ FastAPI-week2/
 - MySQL（已启动，且可创建数据库）
 - Redis（已启动，默认 `localhost:6379`）
 - Git
+- Docker（可选，用于容器化运行）
 
 ### 2. 克隆项目并安装依赖
 
@@ -285,6 +289,47 @@ python -m uvicorn app.main:app --reload
 - ReDoc：<http://127.0.0.1:8000/redoc>
 
 > **提示**：`/users/`、`/files/`、`/health/` 带结尾斜杠，请求不带斜杠的路径会收到 307 重定向；`/auth/...`、`/external/...`、`/cache/...` 不带结尾斜杠。
+
+## Docker 容器化
+
+### 1. Dockerfile
+
+`Dockerfile` 基于 `python:3.13-slim` 构建镜像：
+
+- 设置 `PYTHONDONTWRITEBYTECODE=1`（不生成 `.pyc`）与 `PYTHONUNBUFFERED=1`（日志实时输出）。
+- 先复制 `requirements.txt` 安装依赖，再复制项目代码，代码改动时可以复用依赖层的构建缓存。
+- `EXPOSE 8000`，启动命令为 `uvicorn app.main:app --host 0.0.0.0 --port 8000`。
+
+`.dockerignore` 排除了 `.venv/`、`__pycache__/`、`.git/`、`.env`、`uploads/`、`.pytest_cache/` 等，避免把虚拟环境、密钥和运行时文件打进镜像。
+
+### 2. 构建与运行
+
+在项目根目录构建镜像：
+
+```bash
+docker build -t fastapi-week2 .
+```
+
+运行容器并通过 `--env-file` 注入环境变量：
+
+```bash
+docker run -d --name fastapi-week2 -p 8000:8000 --env-file .env fastapi-week2
+```
+
+启动后访问 <http://127.0.0.1:8000/docs>。查看日志、停止与删除容器：
+
+```bash
+docker logs -f fastapi-week2
+docker stop fastapi-week2
+docker rm fastapi-week2
+```
+
+### 3. 注意事项
+
+- **环境变量必须运行时传入**：`.dockerignore` 排除了 `.env`，镜像内没有配置文件；缺少 `SECRET_KEY`、`GITHUB_TOKEN` 时应用会直接启动失败，因此必须使用 `--env-file .env` 或 `-e` 逐个传入。
+- **容器内的 `localhost` 不是宿主机**：如果 MySQL / Redis 跑在宿主机上，`.env` 中的 `DATABASE_URL` 与 `REDIS_HOST` 要改为 `host.docker.internal`（Docker Desktop 在 Windows / macOS 上支持），否则容器内连不上。
+- **镜像内不包含热重载**：`CMD` 未带 `--reload`，修改代码后需要重新 `docker build` 并重建容器。
+- **上传文件不持久化**：容器内 `uploads/` 的文件随容器删除而丢失，需要时可挂载卷：`-v "$(pwd)/uploads:/app/uploads"`（Git Bash 写法；PowerShell 使用 `${PWD}/uploads:/app/uploads`）。
 
 ## API 文档
 
@@ -524,6 +569,14 @@ pytest tests/test_auth.py -v
 - **未命中语义**：`get_user_cache()` 在 key 不存在时返回 `None`，由路由层继续查库并判断 404。
 - **缓存失效**：`PUT` 与 `DELETE /users/{user_id}` 也改为 `async`，数据库操作成功后调用 `delete_user_cache()`，避免读到旧数据。
 - **副作用**：用户详情接口从此依赖 Redis；本地调试与 pytest 都需要先启动 Redis。
+
+### Day 10：Docker 容器化
+
+- **Dockerfile**：基于 `python:3.13-slim`，设置 `PYTHONDONTWRITEBYTECODE=1` / `PYTHONUNBUFFERED=1`，`WORKDIR /app`。
+- **构建缓存优化**：先 `COPY requirements.txt` 并 `pip install`，再 `COPY . .`，依赖不变时重新构建会命中缓存。
+- **启动命令**：`CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]`，容器内监听 `0.0.0.0` 才能被端口映射访问；未带 `--reload`，代码改动需重新构建镜像。
+- **`.dockerignore`**：排除 `.venv/`、`__pycache__/`、`*.py[cod]`、`.git/`、`.env`、`uploads/`、`.pytest_cache/`，减小构建上下文体积并避免密钥进入镜像。
+- **运行方式**：`docker run --env-file .env` 在运行时注入配置，因为 `.env` 不在镜像内；连接宿主机上的 MySQL / Redis 时需使用 `host.docker.internal`。
 
 ## 更新依赖
 
