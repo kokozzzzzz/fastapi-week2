@@ -1,6 +1,6 @@
 # FastAPI Week 2
 
-一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存与 Docker 容器化，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
+一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存、Docker 容器化与 Docker Compose 编排，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
 
 - 主应用入口：`app/main.py`
 - 交互式接口文档：<http://127.0.0.1:8000/docs>
@@ -18,7 +18,7 @@
 | 认证 | JWT（PyJWT）、Argon2 密码哈希（pwdlib） |
 | 外部请求 | httpx |
 | 服务器 | Uvicorn |
-| 容器化 | Docker |
+| 容器化 | Docker、Docker Compose |
 | 测试 | pytest、FastAPI TestClient |
 
 ## 功能
@@ -79,6 +79,7 @@ FastAPI-week2/
 ├── conftest.py                   # 空文件，让 pytest 把项目根加入 sys.path
 ├── requirements.txt              # 固定版本的依赖清单
 ├── Dockerfile                    # 镜像构建文件（python:3.13-slim + uvicorn）
+├── compose.yaml                  # Docker Compose 编排：MySQL + Redis + API 一键启动
 ├── .dockerignore                 # 构建上下文排除规则（.venv、.env、uploads 等）
 ├── .env_example                  # 环境变量模板（可提交）
 ├── .env                          # 本地私有配置（不提交）
@@ -96,7 +97,7 @@ FastAPI-week2/
 - MySQL（已启动，且可创建数据库）
 - Redis（已启动，默认 `localhost:6379`）
 - Git
-- Docker（可选，用于容器化运行）
+- Docker + Docker Compose（可选，用于容器化 / 编排运行）
 
 ### 2. 克隆项目并安装依赖
 
@@ -159,6 +160,12 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_DB=0
+
+# MySQL Docker Compose 配置
+MYSQL_ROOT_PASSWORD=
+MYSQL_DATABASE=
+MYSQL_USER=
+MYSQL_PASSWORD=
 ```
 
 | 变量 | 必填 | 说明 |
@@ -175,6 +182,10 @@ REDIS_DB=0
 | `REDIS_PORT` | 否 | Redis 端口，默认 `6379` |
 | `REDIS_DB` | 否 | Redis 逻辑数据库编号，默认 `0` |
 | `USER_CACHE_TTL` | 否 | 用户详情缓存过期时间（秒），默认 `60`。`.env_example` 暂未列出该变量，需要修改默认值时手动添加到 `.env` |
+| `MYSQL_ROOT_PASSWORD` | 使用 Docker Compose 时必填 | MySQL root 密码，供 Compose 初始化数据库与健康检查使用 |
+| `MYSQL_DATABASE` | 使用 Docker Compose 时必填 | Compose 启动时自动创建的数据库名，同时用于拼接容器内 `DATABASE_URL` |
+| `MYSQL_USER` | 使用 Docker Compose 时必填 | Compose 创建的 MySQL 用户，`api` 容器用它连接数据库 |
+| `MYSQL_PASSWORD` | 使用 Docker Compose 时必填 | 上述 MySQL 用户的密码 |
 
 生成一个随机 `SECRET_KEY`：
 
@@ -329,7 +340,62 @@ docker rm fastapi-week2
 - **环境变量必须运行时传入**：`.dockerignore` 排除了 `.env`，镜像内没有配置文件；缺少 `SECRET_KEY`、`GITHUB_TOKEN` 时应用会直接启动失败，因此必须使用 `--env-file .env` 或 `-e` 逐个传入。
 - **容器内的 `localhost` 不是宿主机**：如果 MySQL / Redis 跑在宿主机上，`.env` 中的 `DATABASE_URL` 与 `REDIS_HOST` 要改为 `host.docker.internal`（Docker Desktop 在 Windows / macOS 上支持），否则容器内连不上。
 - **镜像内不包含热重载**：`CMD` 未带 `--reload`，修改代码后需要重新 `docker build` 并重建容器。
-- **上传文件不持久化**：容器内 `uploads/` 的文件随容器删除而丢失，需要时可挂载卷：`-v "$(pwd)/uploads:/app/uploads"`（Git Bash 写法；PowerShell 使用 `${PWD}/uploads:/app/uploads`）。
+- **上传文件不持久化**：容器内 `uploads/` 的文件随容器删除而丢失，需要时可挂载卷：`-v "$(pwd)/uploads:/app/uploads"`（Git Bash 写法；PowerShell 使用 `${PWD}/uploads:/app/uploads`）。使用 Docker Compose 时已自动挂载（见下一节）。
+
+## Docker Compose 编排
+
+`compose.yaml` 定义 `mysql`、`redis`、`api` 三个服务，用一条命令拉起完整运行环境。
+
+### 1. 服务组成
+
+| 服务 | 镜像 / 构建 | 端口映射 | 说明 |
+| --- | --- | --- | --- |
+| `mysql` | `mysql:8.0` | `3307:3306` | 宿主机 3307 映射容器 3306，避免与本机 MySQL 冲突；数据保存在命名卷 `mysql_data` |
+| `redis` | `redis:7-alpine` | `6380:6379` | 启动参数带 `--appendonly yes`（AOF 持久化）；数据保存在命名卷 `redis_data` |
+| `api` | 由 `Dockerfile` 构建 | `8000:8000` | 应用容器；`./uploads` 以 bind mount 挂载到 `/app/uploads` |
+
+- **启动顺序**：`api` 通过 `depends_on` 的 `condition: service_healthy` 等待 MySQL 与 Redis 健康检查通过后再启动。
+- **健康检查**：MySQL 用 `mysqladmin ping`（`start_period` 30 秒），Redis 用 `redis-cli ping`。
+- **重启策略**：三个服务均为 `restart: unless-stopped`。
+
+### 2. 环境变量
+
+Compose 额外需要以下变量，`.env_example` 已包含该配置段，填入真实值即可：
+
+```env
+MYSQL_ROOT_PASSWORD=
+MYSQL_DATABASE=
+MYSQL_USER=
+MYSQL_PASSWORD=
+```
+
+`api` 服务先用 `env_file: .env` 载入全部配置，再用 `environment` 覆盖容器内连接地址：
+
+- `DATABASE_URL` 覆盖为 `mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}`——主机名使用 Compose 服务名 `mysql`，端口是容器内 3306，而不是宿主机的 3307。
+- `REDIS_HOST=redis`、`REDIS_PORT=6379`、`REDIS_DB=0`，同样通过服务名访问。
+- `environment` 的优先级高于 `env_file`，`.env` 中指向 `127.0.0.1` 的地址不会生效。
+- `TEST_DATABASE_URL` 不会被覆盖；若要在容器内跑 pytest，需要另外指向可用的测试库。
+
+### 3. 启动与停止
+
+```bash
+# 构建镜像并后台启动全部服务
+docker compose up -d --build
+
+# 查看状态与日志
+docker compose ps
+docker compose logs -f api
+
+# 停止并删除容器（保留数据卷）
+docker compose down
+
+# 停止并删除容器与数据卷（⚠️ 会清空 MySQL / Redis 数据）
+docker compose down -v
+```
+
+启动后访问 <http://127.0.0.1:8000/docs>。从宿主机直连服务时，MySQL 使用 `127.0.0.1:3307`，Redis 使用 `127.0.0.1:6380`。
+
+> **提示**：容器名在 `compose.yaml` 中定义为 `fastapi-week3-mysql` / `fastapi-week3-redis` / `fastapi-week3-api`（前缀为 week3，与项目名 week2 不一致，属历史遗留，不影响运行）。
 
 ## API 文档
 
@@ -577,6 +643,16 @@ pytest tests/test_auth.py -v
 - **启动命令**：`CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]`，容器内监听 `0.0.0.0` 才能被端口映射访问；未带 `--reload`，代码改动需重新构建镜像。
 - **`.dockerignore`**：排除 `.venv/`、`__pycache__/`、`*.py[cod]`、`.git/`、`.env`、`uploads/`、`.pytest_cache/`，减小构建上下文体积并避免密钥进入镜像。
 - **运行方式**：`docker run --env-file .env` 在运行时注入配置，因为 `.env` 不在镜像内；连接宿主机上的 MySQL / Redis 时需使用 `host.docker.internal`。
+
+### Day 11：Docker Compose 编排
+
+- **编排文件**：新增 `compose.yaml`，定义 `mysql`、`redis`、`api` 三个服务，一条 `docker compose up -d --build` 拉起完整环境。
+- **MySQL 服务**：`mysql:8.0`，宿主机端口 3307 映射容器 3306，避开本机已占用的 3306；初始化变量来自 `.env` 中的 `MYSQL_ROOT_PASSWORD` / `MYSQL_DATABASE` / `MYSQL_USER` / `MYSQL_PASSWORD`；数据持久化到命名卷 `mysql_data`。
+- **Redis 服务**：`redis:7-alpine`，开启 AOF（`--appendonly yes`），宿主机端口 6380 映射容器 6379；数据持久化到命名卷 `redis_data`。
+- **健康检查**：MySQL 用 `mysqladmin ping`、Redis 用 `redis-cli ping`；`api` 通过 `depends_on` 的 `condition: service_healthy` 等两者就绪后再启动，避免启动瞬间连不上依赖。
+- **容器内连接配置**：`api` 服务用 `environment` 把 `DATABASE_URL` 覆盖为指向服务名 `mysql:3306` 的地址、`REDIS_HOST` 覆盖为 `redis`；`environment` 优先级高于 `env_file`，`.env` 里写给宿主机用的 `127.0.0.1` 不会生效。
+- **文件持久化**：`./uploads` 以 bind mount 挂载到容器 `/app/uploads`，容器删除重建后上传文件仍保留。
+- **重启策略与数据卷**：三个服务均为 `restart: unless-stopped`；`docker compose down` 保留命名卷，`docker compose down -v` 才会删除 MySQL / Redis 数据。
 
 ## 更新依赖
 
