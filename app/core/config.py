@@ -8,10 +8,17 @@ class Settings(BaseSettings):
     database_url : str = ""
     test_database_url: str = ""  # 测试数据库
 
+    #github配置
     github_token : str = ""
     secret_key: str
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
+
+    #LLM配置
+    deepseek_api_key: str = ""
+    llm_base_url: str = "https://api.deepseek.com"
+    llm_model: str = "deepseek-flash"
+    llm_timeout: float = 60.0
 
     # redis配置
     redis_host: str = "localhost"
@@ -21,7 +28,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file=".env",
-        #extra="ignore",
+        extra="ignore",
     )
 
 

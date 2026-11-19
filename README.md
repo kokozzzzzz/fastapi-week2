@@ -1,6 +1,6 @@
 # FastAPI Week 2
 
-一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存、Docker 容器化与 Docker Compose 编排，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
+一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存、Docker 容器化与 Docker Compose 编排，以及基于 DeepSeek 的 AI 问答接口，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
 
 - 主应用入口：`app/main.py`
 - 交互式接口文档：<http://127.0.0.1:8000/docs>
@@ -17,6 +17,7 @@
 | 缓存 | Redis、redis.asyncio |
 | 认证 | JWT（PyJWT）、Argon2 密码哈希（pwdlib） |
 | 外部请求 | httpx |
+| 大模型 | OpenAI SDK（AsyncOpenAI）、DeepSeek API |
 | 服务器 | Uvicorn |
 | 容器化 | Docker、Docker Compose |
 | 测试 | pytest、FastAPI TestClient |
@@ -30,6 +31,7 @@
 - **外部 API**：通过 `httpx` 异步调用 GitHub 用户接口，返回精简后的公开信息，并映射 404 / 502 错误。
 - **Redis 缓存**：基于 `redis.asyncio` 的异步客户端，支持缓存写入（60 秒 TTL）、读取、删除与 TTL 查询；`/cache/demo` 演示 Cache-Aside 模式。
 - **用户详情缓存**：`GET /users/{user_id}` 采用 Cache-Aside，key 为 `user:{user_id}`，TTL 由 `USER_CACHE_TTL` 控制（默认 60 秒）；响应头 `X-Cache` 标记 `HIT` / `MISS`，更新或删除用户时自动使缓存失效。
+- **AI 问答**：`POST /ai/chat` 接收用户问题，拼接中文系统提示词后通过 OpenAI SDK 异步调用 DeepSeek，返回回答文本与模型名；未配置 API Key 返回 503，请求超时返回 504，认证 / 连接 / 服务端错误返回 502。
 - **基础设施**：健康检查、请求耗时中间件（响应头 `X-Process-Time`）、CORS（允许 Vite 开发服务器跨域）。
 - **自动化测试**：pytest + TestClient，使用独立测试数据库，覆盖认证、用户、文件上传与健康检查。
 
@@ -39,7 +41,11 @@
 FastAPI-week2/
 ├── app/                          # 主应用
 │   ├── main.py                   # 应用入口：创建 FastAPI 实例、注册中间件 / CORS / 路由、自动建表
+│   ├── ai/                       # 大模型接入层
+│   │   ├── client.py             # AsyncOpenAI 客户端（lru_cache 复用）与 generate_answer()
+│   │   └── llm_test.py           # DeepSeek 同步调用练习脚本（独立运行，不参与应用）
 │   ├── api/                      # 路由层：只处理 HTTP 请求与响应
+│   │   ├── ai.py                 # /ai/chat AI 问答接口
 │   │   ├── auth.py               # /auth 注册、登录、当前用户
 │   │   ├── cache.py              # /cache 缓存读写与 Cache-Aside 演示
 │   │   ├── external.py           # /external 调用 GitHub API
@@ -60,9 +66,11 @@ FastAPI-week2/
 │   ├── models/
 │   │   └── user.py               # User ORM 模型（含 password_hash），映射 users 表
 │   ├── schemas/
+│   │   ├── ai.py                 # ChatRequest / ChatResponse
 │   │   ├── auth.py               # 登录 / Token 响应模型
 │   │   └── user.py               # UserCreate / UserUpdate / UserResponse
 │   └── services/                 # 业务逻辑层
+│       ├── ai_service.py         # AI 问答：拼接系统提示词后调用大模型
 │       ├── auth_service.py       # 注册与登录校验
 │       └── user_service.py       # 用户增删改查
 │
@@ -160,12 +168,19 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_DB=0
+USER_CACHE_TTL=60
 
 # MySQL Docker Compose 配置
 MYSQL_ROOT_PASSWORD=
 MYSQL_DATABASE=
 MYSQL_USER=
 MYSQL_PASSWORD=
+
+# 大语言模型配置
+DEEPSEEK_API_KEY=
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-flash
+LLM_TIMEOUT=60
 ```
 
 | 变量 | 必填 | 说明 |
@@ -181,7 +196,11 @@ MYSQL_PASSWORD=
 | `REDIS_HOST` | 否 | Redis 主机，默认 `localhost` |
 | `REDIS_PORT` | 否 | Redis 端口，默认 `6379` |
 | `REDIS_DB` | 否 | Redis 逻辑数据库编号，默认 `0` |
-| `USER_CACHE_TTL` | 否 | 用户详情缓存过期时间（秒），默认 `60`。`.env_example` 暂未列出该变量，需要修改默认值时手动添加到 `.env` |
+| `USER_CACHE_TTL` | 否 | 用户详情缓存过期时间（秒），默认 `60` |
+| `DEEPSEEK_API_KEY` | 调用 `/ai/chat` 时必填 | DeepSeek API Key。留空不影响应用启动，但调用 AI 接口会返回 503 |
+| `LLM_BASE_URL` | 否 | OpenAI 兼容接口地址，默认 `https://api.deepseek.com` |
+| `LLM_MODEL` | 否 | 调用的模型名称，默认 `deepseek-flash` |
+| `LLM_TIMEOUT` | 否 | 调用大模型的超时时间（秒），默认 `60`；超时返回 504 |
 | `MYSQL_ROOT_PASSWORD` | 使用 Docker Compose 时必填 | MySQL root 密码，供 Compose 初始化数据库与健康检查使用 |
 | `MYSQL_DATABASE` | 使用 Docker Compose 时必填 | Compose 启动时自动创建的数据库名，同时用于拼接容器内 `DATABASE_URL` |
 | `MYSQL_USER` | 使用 Docker Compose 时必填 | Compose 创建的 MySQL 用户，`api` 容器用它连接数据库 |
@@ -278,6 +297,38 @@ redis_client = redis.Redis(
 - 更新（`PUT`）或删除（`DELETE`）用户成功后调用 `delete_user_cache()` 使缓存失效。
 - 绕过接口直接修改数据库不会同步缓存，最多读到 TTL 时间内的旧数据。
 
+## AI 问答（DeepSeek）
+
+### 1. 配置
+
+在 `.env` 中填写 `DEEPSEEK_API_KEY`（调用 AI 接口时必填），其余变量有默认值，可按需覆盖：
+
+```env
+DEEPSEEK_API_KEY=sk-...
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-flash
+LLM_TIMEOUT=60
+```
+
+`DEEPSEEK_API_KEY` 为空时应用仍能正常启动，调用 `POST /ai/chat` 会返回 503。
+
+### 2. 实现结构
+
+- `app/ai/client.py`：用 `lru_cache(maxsize=1)` 复用 `AsyncOpenAI` 客户端，`base_url` 指向 DeepSeek 的 OpenAI 兼容接口，超时读取 `LLM_TIMEOUT`，`max_retries=2`；`generate_answer()` 调用 `chat.completions.create()`，校验 `choices` 与回答内容非空后，返回去除首尾空白的文本。
+- `app/services/ai_service.py`：`chat_with_ai()` 在用户问题前拼接中文系统提示词（要求准确、分点、不编造），再交给 `generate_answer()`。
+- `app/api/ai.py`：`POST /ai/chat`，请求体 `{"message": "..."}`（1–4000 字符，去除首尾空白后不能为空），响应 `{"answer": "...", "model": "deepseek-flash"}`。
+
+### 3. 错误映射
+
+| 状态码 | 场景 |
+| --- | --- |
+| 422 | `message` 为空、只有空白或超过 4000 字符 |
+| 502 | API Key 认证失败、无法连接大模型服务、大模型返回错误状态码 |
+| 503 | 未配置 `DEEPSEEK_API_KEY`，或模型返回空回答 |
+| 504 | 请求大模型超时（默认 60 秒） |
+
+> **提示**：`app/ai/llm_test.py` 是独立的同步调用练习脚本，在项目根目录运行 `python app/ai/llm_test.py` 可在终端交互测试 DeepSeek，不参与应用运行。
+
 ## 运行方式
 
 在**项目根目录**启动主应用：
@@ -299,7 +350,7 @@ python -m uvicorn app.main:app --reload
 - Swagger UI：<http://127.0.0.1:8000/docs>
 - ReDoc：<http://127.0.0.1:8000/redoc>
 
-> **提示**：`/users/`、`/files/`、`/health/` 带结尾斜杠，请求不带斜杠的路径会收到 307 重定向；`/auth/...`、`/external/...`、`/cache/...` 不带结尾斜杠。
+> **提示**：`/users/`、`/files/`、`/health/` 带结尾斜杠，请求不带斜杠的路径会收到 307 重定向；`/auth/...`、`/external/...`、`/cache/...`、`/ai/...` 不带结尾斜杠。
 
 ## Docker 容器化
 
@@ -425,6 +476,7 @@ Authorization: Bearer <access_token>
 | DELETE | `/users/{user_id}` | 删除用户 | 是 |
 | POST | `/files/` | 上传文件 | 否 |
 | GET | `/external/github/{username}` | 外部 API：GitHub 用户信息 | 否 |
+| POST | `/ai/chat` | AI 问答（DeepSeek） | 否 |
 | POST | `/cache/test/{key}` | 写入缓存（TTL 60 秒） | 否 |
 | GET | `/cache/test/{key}` | 读取缓存 | 否 |
 | GET | `/cache/test/{key}/ttl` | 查看剩余 TTL | 否 |
@@ -466,6 +518,11 @@ curl -X POST http://127.0.0.1:8000/files/ \
 # 外部 GitHub API
 curl http://127.0.0.1:8000/external/github/torvalds
 
+# AI 问答：需要 .env 中配置 DEEPSEEK_API_KEY
+curl -X POST http://127.0.0.1:8000/ai/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"用一句话解释什么是 FastAPI"}'
+
 # 写入缓存：value 是查询参数，60 秒后过期
 curl -X POST "http://127.0.0.1:8000/cache/test/name?value=koko"
 
@@ -490,7 +547,9 @@ curl http://127.0.0.1:8000/cache/demo
 | 413 | 上传文件超过 5MB |
 | 422 | 请求参数 / 请求体校验失败 |
 | 500 | 访问 `/cache/*` 或 `GET /users/{user_id}` 时 Redis 未启动或连接失败 |
-| 502 | 外部 API 请求失败 |
+| 502 | 外部 API 请求失败；大模型认证失败、连接失败或返回错误状态码 |
+| 503 | 未配置 `DEEPSEEK_API_KEY`，或大模型返回空回答 |
+| 504 | 请求大模型超时 |
 
 ## 测试方式
 
@@ -532,6 +591,8 @@ pytest tests/test_auth.py -v
 > **提示**：上传测试会在 `uploads/` 目录留下测试文件；该目录已加入 `.gitignore`，不会提交到 Git。
 
 > **提示**：`GET /users/{user_id}` 与 `/cache/*` 依赖真实 Redis；目前没有专门覆盖缓存命中 / 失效的 pytest 用例。
+
+> **提示**：`/ai/chat` 会真实调用外部大模型，未编写自动化测试；现有 pytest 用例不依赖 `DEEPSEEK_API_KEY`（应用启动不要求该变量）。
 
 > **提示**：`reset_database` 只重建测试数据库，**不会清理 Redis**。若用例涉及已缓存的用户，需手动删除对应 key，否则可能读到上一条用例留下的数据。
 
@@ -654,6 +715,17 @@ pytest tests/test_auth.py -v
 - **文件持久化**：`./uploads` 以 bind mount 挂载到容器 `/app/uploads`，容器删除重建后上传文件仍保留。
 - **重启策略与数据卷**：三个服务均为 `restart: unless-stopped`；`docker compose down` 保留命名卷，`docker compose down -v` 才会删除 MySQL / Redis 数据。
 
+### Day 12：接入大模型（DeepSeek）
+
+- **依赖**：新增 `openai` SDK，通过其 OpenAI 兼容接口访问 DeepSeek，依赖清单已重新导出为 UTF-8。
+- **配置**：`Settings` 新增 `deepseek_api_key` / `llm_base_url` / `llm_model` / `llm_timeout`；`.env_example` 同步新增四个变量，并补上此前遗漏的 `USER_CACHE_TTL`。
+- **客户端**：`app/ai/client.py` 用 `lru_cache(maxsize=1)` 复用 `AsyncOpenAI` 客户端，`timeout` 读取配置、`max_retries=2`；API Key 为空时在首次调用抛出 `RuntimeError`，不影响应用启动。
+- **调用封装**：`generate_answer()` 调用 `chat.completions.create()`，校验 `choices` 非空且回答内容不为空，返回去除首尾空白的文本。
+- **业务层**：`app/services/ai_service.py` 的 `chat_with_ai()` 在用户问题前拼接中文系统提示词。
+- **接口**：`POST /ai/chat`，`ChatRequest` 限制 `message` 1–4000 字符并去除首尾空白；`ChatResponse` 返回 `answer` 与 `model`。
+- **错误映射**：未配置 Key / 空回答 → 503；认证失败、连接失败、服务端错误 → 502；超时 → 504。
+- **练习脚本**：`app/ai/llm_test.py` 用同步 `OpenAI` 客户端在终端交互调用 DeepSeek，不参与应用运行。
+
 ## 更新依赖
 
 新增第三方库后，重新导出依赖清单：
@@ -662,4 +734,4 @@ pytest tests/test_auth.py -v
 pip freeze > requirements.txt
 ```
 
-> **提示**：Windows PowerShell 的重定向默认生成 UTF-16 编码的文件，Git 会把它当成二进制文件，diff 不可读，部分工具也可能读取异常。可改用 `pip freeze | Out-File -Encoding utf8 requirements.txt`。当前仓库中的 `requirements.txt` 是 UTF-16 LE（带 BOM），建议重新导出为 UTF-8。
+> **提示**：Windows PowerShell 的重定向默认生成 UTF-16 编码的文件，Git 会把它当成二进制文件，diff 不可读，部分工具也可能读取异常。可改用 `pip freeze | Out-File -Encoding utf8 requirements.txt`。当前仓库中的 `requirements.txt` 已是 UTF-8，重新导出时请保持该编码。

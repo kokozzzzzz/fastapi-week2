@@ -20,6 +20,8 @@ from app.api.files import router as files_router
 
 from app.api.cache import router as cache_router
 
+from app.api.ai import router as ai_router
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -68,3 +70,7 @@ app.include_router(files_router)
 
 # 缓存router
 app.include_router(cache_router)
+
+# AI router
+app.include_router(ai_router)
+
