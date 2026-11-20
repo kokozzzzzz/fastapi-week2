@@ -1,15 +1,9 @@
 from app.ai.client import generate_answer
-
-
-SYSTEM_PROMPT = """
-你是一个严谨、准确、清晰的中文AI助手。
-
-回答要求：
-1. 优先使用中文回答。
-2. 尽量保证信息准确。
-3. 对复杂问题分点解释。
-4. 如果不确定，不要编造信息。
-"""
+from app.ai.prompts import (
+    build_chat_messages,
+    build_extract_messages,
+    build_summary_messages,
+)
 
 
 async def chat_with_ai(message: str) -> str:
@@ -17,17 +11,33 @@ async def chat_with_ai(message: str) -> str:
     AI聊天业务逻辑。
     """
 
-    messages = [
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT,
-        },
-        {
-            "role": "user",
-            "content": message,
-        },
-    ]
+    messages = build_chat_messages(message)
 
     answer = await generate_answer(messages)
+    return answer
 
+
+async def summarize_text(text: str) -> str:
+    """
+    AI文本总结
+    """
+    messages =build_summary_messages(text)
+
+    answer = await generate_answer(messages,temperature=0.2)
+    return answer
+
+async def extract_key_info(
+    text: str,
+    use_few_shot: bool = False,
+) -> str:
+    '''
+    AI信息提取
+    '''
+
+    messages = build_extract_messages(
+        text,
+        use_few_shot=use_few_shot
+    )
+
+    answer = await generate_answer(messages,temperature=0.2)
     return answer

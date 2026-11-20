@@ -26,7 +26,8 @@ def get_llm_client() -> AsyncOpenAI:
     )
 
 async def generate_answer(
-    messages: list[dict[str,str]]
+    messages: list[dict[str,str]],
+    temperature: float | None = None,
 ) -> str:
     """
     根据消息列表调用大模型，返回回答文本。
@@ -34,10 +35,27 @@ async def generate_answer(
 
     client = get_llm_client()
 
-    response = await client.chat.completions.create(
-        model=setting.llm_model,
-        messages=messages,
-    )
+    if temperature is None:
+        response = await client.chat.completions.create(
+            model=setting.llm_model,
+            messages=messages,
+        )
+    else:
+        if not 0 <= temperature <=2:
+            raise ValueError("temperature必须再0-2之间")
+
+        response = await client.chat.completions.create(
+            model=setting.llm_model,
+            messages=messages,
+            temperature=temperature,
+            extra_body={
+                "thinking":{
+                    "type": "disabled"
+                }
+            }
+        )
+    
+    
 
     if not response.choices:
         raise RuntimeError("模型没有返回有效回答，请重试")

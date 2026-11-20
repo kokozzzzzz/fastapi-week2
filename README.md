@@ -1,6 +1,6 @@
 # FastAPI Week 2
 
-一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存、Docker 容器化与 Docker Compose 编排，以及基于 DeepSeek 的 AI 问答接口，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
+一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存、Docker 容器化与 Docker Compose 编排，以及基于 DeepSeek 的 AI 问答、文本总结与信息提取接口（提示词模板化，支持少样本），最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
 
 - 主应用入口：`app/main.py`
 - 交互式接口文档：<http://127.0.0.1:8000/docs>
@@ -31,9 +31,9 @@
 - **外部 API**：通过 `httpx` 异步调用 GitHub 用户接口，返回精简后的公开信息，并映射 404 / 502 错误。
 - **Redis 缓存**：基于 `redis.asyncio` 的异步客户端，支持缓存写入（60 秒 TTL）、读取、删除与 TTL 查询；`/cache/demo` 演示 Cache-Aside 模式。
 - **用户详情缓存**：`GET /users/{user_id}` 采用 Cache-Aside，key 为 `user:{user_id}`，TTL 由 `USER_CACHE_TTL` 控制（默认 60 秒）；响应头 `X-Cache` 标记 `HIT` / `MISS`，更新或删除用户时自动使缓存失效。
-- **AI 问答**：`POST /ai/chat` 接收用户问题，拼接中文系统提示词后通过 OpenAI SDK 异步调用 DeepSeek，返回回答文本与模型名；未配置 API Key 返回 503，请求超时返回 504，认证 / 连接 / 服务端错误返回 502。
+- **AI 能力**：`POST /ai/chat` 问答、`POST /ai/summarize` 文本总结、`POST /ai/extract` 信息提取，统一通过 OpenAI SDK 异步调用 DeepSeek，返回回答文本与模型名；提示词集中在 `app/ai/prompts.py`，提取接口可切换零样本 / 少样本；未配置 API Key 或请求受限返回 503，请求超时返回 504，认证 / 连接 / 服务端错误返回 502。
 - **基础设施**：健康检查、请求耗时中间件（响应头 `X-Process-Time`）、CORS（允许 Vite 开发服务器跨域）。
-- **自动化测试**：pytest + TestClient，使用独立测试数据库，覆盖认证、用户、文件上传与健康检查。
+- **自动化测试**：pytest + TestClient，使用独立测试数据库，覆盖认证、用户、文件上传、健康检查与提示词消息构造。
 
 ## 目录结构
 
@@ -43,9 +43,11 @@ FastAPI-week2/
 │   ├── main.py                   # 应用入口：创建 FastAPI 实例、注册中间件 / CORS / 路由、自动建表
 │   ├── ai/                       # 大模型接入层
 │   │   ├── client.py             # AsyncOpenAI 客户端（lru_cache 复用）与 generate_answer()
+│   │   ├── prompts.py            # 系统提示词与消息构造：chat / summary / extract（含少样本）
+│   │   ├── prompt_experiment.py  # temperature 对比实验脚本（独立运行，不参与应用）
 │   │   └── llm_test.py           # DeepSeek 同步调用练习脚本（独立运行，不参与应用）
 │   ├── api/                      # 路由层：只处理 HTTP 请求与响应
-│   │   ├── ai.py                 # /ai/chat AI 问答接口
+│   │   ├── ai.py                 # /ai 问答、文本总结、信息提取接口
 │   │   ├── auth.py               # /auth 注册、登录、当前用户
 │   │   ├── cache.py              # /cache 缓存读写与 Cache-Aside 演示
 │   │   ├── external.py           # /external 调用 GitHub API
@@ -66,16 +68,17 @@ FastAPI-week2/
 │   ├── models/
 │   │   └── user.py               # User ORM 模型（含 password_hash），映射 users 表
 │   ├── schemas/
-│   │   ├── ai.py                 # ChatRequest / ChatResponse
+│   │   ├── ai.py                 # ChatRequest / ChatResponse / TextRequest / ExtractRequest
 │   │   ├── auth.py               # 登录 / Token 响应模型
 │   │   └── user.py               # UserCreate / UserUpdate / UserResponse
 │   └── services/                 # 业务逻辑层
-│       ├── ai_service.py         # AI 问答：拼接系统提示词后调用大模型
+│       ├── ai_service.py         # AI 业务：构造消息并调用大模型（chat / summarize / extract）
 │       ├── auth_service.py       # 注册与登录校验
 │       └── user_service.py       # 用户增删改查
 │
 ├── tests/                        # pytest 自动化测试
 │   ├── conftest.py               # 测试数据库、TestClient、auth_headers fixture
+│   ├── test_ai_prompts.py        # 提示词消息构造测试（不调用真实模型）
 │   ├── test_auth.py              # 注册 / 登录 / 当前用户测试
 │   ├── test_files.py             # 文件上传测试
 │   ├── test_health.py            # 健康检查与参数校验测试
@@ -297,7 +300,7 @@ redis_client = redis.Redis(
 - 更新（`PUT`）或删除（`DELETE`）用户成功后调用 `delete_user_cache()` 使缓存失效。
 - 绕过接口直接修改数据库不会同步缓存，最多读到 TTL 时间内的旧数据。
 
-## AI 问答（DeepSeek）
+## AI 能力（DeepSeek）
 
 ### 1. 配置
 
@@ -314,20 +317,35 @@ LLM_TIMEOUT=60
 
 ### 2. 实现结构
 
-- `app/ai/client.py`：用 `lru_cache(maxsize=1)` 复用 `AsyncOpenAI` 客户端，`base_url` 指向 DeepSeek 的 OpenAI 兼容接口，超时读取 `LLM_TIMEOUT`，`max_retries=2`；`generate_answer()` 调用 `chat.completions.create()`，校验 `choices` 与回答内容非空后，返回去除首尾空白的文本。
-- `app/services/ai_service.py`：`chat_with_ai()` 在用户问题前拼接中文系统提示词（要求准确、分点、不编造），再交给 `generate_answer()`。
-- `app/api/ai.py`：`POST /ai/chat`，请求体 `{"message": "..."}`（1–4000 字符，去除首尾空白后不能为空），响应 `{"answer": "...", "model": "deepseek-flash"}`。
+- `app/ai/prompts.py`：集中维护三组中文系统提示词，并提供对应的消息构造函数：
+  - `build_chat_messages()`：问答，system + user 两条消息。
+  - `build_summary_messages()`：总结，要求按「一句话概括 / 主要内容（3～5 个要点）/ 关键数据」的格式输出。
+  - `build_extract_messages()`：信息提取，按「事项名称、时间、地点、组织方、面向对象、截止时间、联系方式」逐项提取，缺失字段填「未提及」；`use_few_shot=True` 时插入两组示例问答（共 6 条消息），否则只有 system + user 两条。
+  - 总结与提取的提示词都用 `<待处理文本>` 标签包裹用户输入；提取提示词还声明标签内的内容不视为系统指令，用于降低提示词注入风险。
+- `app/ai/client.py`：用 `lru_cache(maxsize=1)` 复用 `AsyncOpenAI` 客户端，`base_url` 指向 DeepSeek 的 OpenAI 兼容接口，超时读取 `LLM_TIMEOUT`，`max_retries=2`；`generate_answer(messages, temperature=None)` 调用 `chat.completions.create()`，校验 `choices` 与回答内容非空后，返回去除首尾空白的文本。传入 `temperature` 时校验范围 0–2，并通过 `extra_body` 关闭 DeepSeek 的 thinking 模式。
+- `app/services/ai_service.py`：`chat_with_ai()` / `summarize_text()` / `extract_key_info()` 分别构造消息后调用 `generate_answer()`；总结与提取固定 `temperature=0.2`，问答使用模型默认值。
+- `app/api/ai.py`：三个接口共用 `_run_ai_task()`，将大模型异常统一映射为 HTTP 错误。
 
-### 3. 错误映射
+### 3. 接口
+
+| Endpoint | 请求体 | 说明 |
+| --- | --- | --- |
+| `POST /ai/chat` | `{"message": "..."}` | 问答，`message` 1–4000 字符 |
+| `POST /ai/summarize` | `{"text": "..."}` | 文本总结，`text` 1–8000 字符 |
+| `POST /ai/extract` | `{"text": "...", "use_few_shot": false}` | 信息提取，`use_few_shot` 默认 `false` |
+
+文本字段都会去除首尾空白，纯空白内容返回 422。三个接口的成功响应统一为 `{"answer": "...", "model": "deepseek-flash"}`。
+
+### 4. 错误映射
 
 | 状态码 | 场景 |
 | --- | --- |
-| 422 | `message` 为空、只有空白或超过 4000 字符 |
+| 422 | 请求文本为空、只有空白或超过长度限制 |
 | 502 | API Key 认证失败、无法连接大模型服务、大模型返回错误状态码 |
-| 503 | 未配置 `DEEPSEEK_API_KEY`，或模型返回空回答 |
+| 503 | 未配置 `DEEPSEEK_API_KEY`、模型返回空回答，或请求受限 / 账户额度不足 |
 | 504 | 请求大模型超时（默认 60 秒） |
 
-> **提示**：`app/ai/llm_test.py` 是独立的同步调用练习脚本，在项目根目录运行 `python app/ai/llm_test.py` 可在终端交互测试 DeepSeek，不参与应用运行。
+> **提示**：`app/ai/prompt_experiment.py` 会依次用 temperature 0.2 / 0.7 / 1.2 调用同一问题，对比输出差异，在项目根目录运行 `python -m app.ai.prompt_experiment`。`app/ai/llm_test.py` 是独立的同步调用练习脚本，在项目根目录运行 `python app/ai/llm_test.py` 可在终端交互测试 DeepSeek。两者都不参与应用运行。
 
 ## 运行方式
 
@@ -477,6 +495,8 @@ Authorization: Bearer <access_token>
 | POST | `/files/` | 上传文件 | 否 |
 | GET | `/external/github/{username}` | 外部 API：GitHub 用户信息 | 否 |
 | POST | `/ai/chat` | AI 问答（DeepSeek） | 否 |
+| POST | `/ai/summarize` | AI 文本总结（DeepSeek） | 否 |
+| POST | `/ai/extract` | AI 信息提取（DeepSeek，可切换少样本） | 否 |
 | POST | `/cache/test/{key}` | 写入缓存（TTL 60 秒） | 否 |
 | GET | `/cache/test/{key}` | 读取缓存 | 否 |
 | GET | `/cache/test/{key}/ttl` | 查看剩余 TTL | 否 |
@@ -523,6 +543,16 @@ curl -X POST http://127.0.0.1:8000/ai/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"用一句话解释什么是 FastAPI"}'
 
+# 文本总结：按「一句话概括 / 主要内容 / 关键数据」输出
+curl -X POST http://127.0.0.1:8000/ai/summarize \
+  -H "Content-Type: application/json" \
+  -d '{"text":"（粘贴一段需要总结的文本）"}'
+
+# 信息提取：use_few_shot 可选，默认 false
+curl -X POST http://127.0.0.1:8000/ai/extract \
+  -H "Content-Type: application/json" \
+  -d '{"text":"协会将于11月20日在教学楼101举办算法分享会，面向全校学生，报名截止11月18日。","use_few_shot":true}'
+
 # 写入缓存：value 是查询参数，60 秒后过期
 curl -X POST "http://127.0.0.1:8000/cache/test/name?value=koko"
 
@@ -548,7 +578,7 @@ curl http://127.0.0.1:8000/cache/demo
 | 422 | 请求参数 / 请求体校验失败 |
 | 500 | 访问 `/cache/*` 或 `GET /users/{user_id}` 时 Redis 未启动或连接失败 |
 | 502 | 外部 API 请求失败；大模型认证失败、连接失败或返回错误状态码 |
-| 503 | 未配置 `DEEPSEEK_API_KEY`，或大模型返回空回答 |
+| 503 | 未配置 `DEEPSEEK_API_KEY`、大模型返回空回答，或请求受限 / 账户额度不足 |
 | 504 | 请求大模型超时 |
 
 ## 测试方式
@@ -584,6 +614,7 @@ pytest tests/test_auth.py -v
 | 文件 | 覆盖内容 |
 | --- | --- |
 | `tests/test_health.py` | 健康检查、请求体字段校验 |
+| `tests/test_ai_prompts.py` | 提示词消息构造：角色顺序、消息条数、文本包裹与零样本 / 少样本分支（不调用真实模型） |
 | `tests/test_auth.py` | 注册成功 / 重名、登录成功 / 密码错误、`/auth/me` 无 Token / 有 Token |
 | `tests/test_users.py` | 未登录访问返回 401、登录后查询列表、查询不存在的用户返回 404（先读缓存未命中，再查库） |
 | `tests/test_files.py` | 上传合法 `.txt` 返回 201、上传 `.exe` 返回 400 |
@@ -592,7 +623,7 @@ pytest tests/test_auth.py -v
 
 > **提示**：`GET /users/{user_id}` 与 `/cache/*` 依赖真实 Redis；目前没有专门覆盖缓存命中 / 失效的 pytest 用例。
 
-> **提示**：`/ai/chat` 会真实调用外部大模型，未编写自动化测试；现有 pytest 用例不依赖 `DEEPSEEK_API_KEY`（应用启动不要求该变量）。
+> **提示**：`tests/test_ai_prompts.py` 只测试消息构造，不会调用真实模型；`/ai/*` 接口本身未编写自动化测试，现有 pytest 用例不依赖 `DEEPSEEK_API_KEY`（应用启动不要求该变量）。
 
 > **提示**：`reset_database` 只重建测试数据库，**不会清理 Redis**。若用例涉及已缓存的用户，需手动删除对应 key，否则可能读到上一条用例留下的数据。
 
@@ -725,6 +756,20 @@ pytest tests/test_auth.py -v
 - **接口**：`POST /ai/chat`，`ChatRequest` 限制 `message` 1–4000 字符并去除首尾空白；`ChatResponse` 返回 `answer` 与 `model`。
 - **错误映射**：未配置 Key / 空回答 → 503；认证失败、连接失败、服务端错误 → 502；超时 → 504。
 - **练习脚本**：`app/ai/llm_test.py` 用同步 `OpenAI` 客户端在终端交互调用 DeepSeek，不参与应用运行。
+
+### Day 13：Prompt 工程（提示词模板、少样本与文本任务接口）
+
+- **提示词集中管理**：新增 `app/ai/prompts.py`，把系统提示词从业务代码中剥离，统一按「角色 / 任务 / 约束 / 输出格式」组织。
+- **消息构造**：`build_chat_messages()` / `build_summary_messages()` / `build_extract_messages()` 返回 OpenAI `messages` 格式的消息列表，system 提示词与用户输入分离。
+- **文本总结**：`SUMMARY_SYSTEM_PROMPT` 要求按「一句话概括 / 主要内容（3～5 个要点）/ 关键数据」格式输出，只依据原文、不添加原文没有的信息。
+- **信息提取**：`EXTRACT_SYSTEM_PROMPT` 定义七个提取字段（事项名称、时间、地点、组织方、面向对象、截止时间、联系方式），缺失字段填「未提及」；`use_few_shot=True` 时插入两组示例问答。
+- **提示词注入防护**：总结与提取用 `<待处理文本>` 标签包裹用户输入；提取提示词额外声明标签内的指令不生效。
+- **客户端扩展**：`generate_answer()` 改为接收 `messages` 并支持可选 `temperature`（校验 0–2）；设置 temperature 时通过 `extra_body` 关闭 DeepSeek 的 thinking 模式。
+- **业务层**：`ai_service.py` 新增 `summarize_text()` 与 `extract_key_info()`，两者使用 `temperature=0.2`；`chat_with_ai()` 改用 `build_chat_messages()`。
+- **接口**：新增 `POST /ai/summarize`（`TextRequest`，1–8000 字符）与 `POST /ai/extract`（`ExtractRequest` 继承 `TextRequest`，增加 `use_few_shot`）。
+- **错误映射**：抽取统一异常处理 `_run_ai_task()`，新增 `RateLimitError` → 503（请求受限或账户额度不足）。
+- **实验脚本**：`app/ai/prompt_experiment.py` 用 temperature 0.2 / 0.7 / 1.2 调用同一问题并对比输出，不参与应用运行。
+- **测试**：`tests/test_ai_prompts.py` 覆盖三种消息构造函数以及零样本 / 少样本分支，只校验消息结构，不调用真实模型。
 
 ## 更新依赖
 
