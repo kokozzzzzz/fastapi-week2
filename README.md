@@ -1,6 +1,6 @@
 # FastAPI Week 2
 
-一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存、Docker 容器化与 Docker Compose 编排，以及基于 DeepSeek 的 AI 问答、文本总结与信息提取接口（提示词模板化，支持少样本），最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
+一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存、Docker 容器化与 Docker Compose 编排，以及基于 DeepSeek 的 AI 问答、文本总结与信息提取接口（提示词模板化，支持少样本，问答支持 SSE 流式输出），最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
 
 - 主应用入口：`app/main.py`
 - 交互式接口文档：<http://127.0.0.1:8000/docs>
@@ -18,6 +18,7 @@
 | 认证 | JWT（PyJWT）、Argon2 密码哈希（pwdlib） |
 | 外部请求 | httpx |
 | 大模型 | OpenAI SDK（AsyncOpenAI）、DeepSeek API |
+| 流式输出 | SSE（FastAPI 内置 `EventSourceResponse`） |
 | 服务器 | Uvicorn |
 | 容器化 | Docker、Docker Compose |
 | 测试 | pytest、FastAPI TestClient |
@@ -32,6 +33,7 @@
 - **Redis 缓存**：基于 `redis.asyncio` 的异步客户端，支持缓存写入（60 秒 TTL）、读取、删除与 TTL 查询；`/cache/demo` 演示 Cache-Aside 模式。
 - **用户详情缓存**：`GET /users/{user_id}` 采用 Cache-Aside，key 为 `user:{user_id}`，TTL 由 `USER_CACHE_TTL` 控制（默认 60 秒）；响应头 `X-Cache` 标记 `HIT` / `MISS`，更新或删除用户时自动使缓存失效。
 - **AI 能力**：`POST /ai/chat` 问答、`POST /ai/summarize` 文本总结、`POST /ai/extract` 信息提取，统一通过 OpenAI SDK 异步调用 DeepSeek，返回回答文本与模型名；提示词集中在 `app/ai/prompts.py`，提取接口可切换零样本 / 少样本；未配置 API Key 或请求受限返回 503，请求超时返回 504，认证 / 连接 / 服务端错误返回 502。
+- **流式问答（SSE）**：`POST /ai/chat/stream` 通过 Server-Sent Events 逐段推送回答，`delta` 事件携带增量文本，正常结束发送 `done`，异常发送 `error`；客户端断开后停止生成。
 - **基础设施**：健康检查、请求耗时中间件（响应头 `X-Process-Time`）、CORS（允许 Vite 开发服务器跨域）。
 - **自动化测试**：pytest + TestClient，使用独立测试数据库，覆盖认证、用户、文件上传、健康检查与提示词消息构造。
 
@@ -42,12 +44,12 @@ FastAPI-week2/
 ├── app/                          # 主应用
 │   ├── main.py                   # 应用入口：创建 FastAPI 实例、注册中间件 / CORS / 路由、自动建表
 │   ├── ai/                       # 大模型接入层
-│   │   ├── client.py             # AsyncOpenAI 客户端（lru_cache 复用）与 generate_answer()
+│   │   ├── client.py             # AsyncOpenAI 客户端（lru_cache 复用）、generate_answer() 与 stream_answer()
 │   │   ├── prompts.py            # 系统提示词与消息构造：chat / summary / extract（含少样本）
 │   │   ├── prompt_experiment.py  # temperature 对比实验脚本（独立运行，不参与应用）
 │   │   └── llm_test.py           # DeepSeek 同步调用练习脚本（独立运行，不参与应用）
 │   ├── api/                      # 路由层：只处理 HTTP 请求与响应
-│   │   ├── ai.py                 # /ai 问答、文本总结、信息提取接口
+│   │   ├── ai.py                 # /ai 问答、文本总结、信息提取与 SSE 流式问答
 │   │   ├── auth.py               # /auth 注册、登录、当前用户
 │   │   ├── cache.py              # /cache 缓存读写与 Cache-Aside 演示
 │   │   ├── external.py           # /external 调用 GitHub API
@@ -72,7 +74,7 @@ FastAPI-week2/
 │   │   ├── auth.py               # 登录 / Token 响应模型
 │   │   └── user.py               # UserCreate / UserUpdate / UserResponse
 │   └── services/                 # 业务逻辑层
-│       ├── ai_service.py         # AI 业务：构造消息并调用大模型（chat / summarize / extract）
+│       ├── ai_service.py         # AI 业务：构造消息并调用大模型（chat / stream chat / summarize / extract）
 │       ├── auth_service.py       # 注册与登录校验
 │       └── user_service.py       # 用户增删改查
 │
@@ -322,9 +324,9 @@ LLM_TIMEOUT=60
   - `build_summary_messages()`：总结，要求按「一句话概括 / 主要内容（3～5 个要点）/ 关键数据」的格式输出。
   - `build_extract_messages()`：信息提取，按「事项名称、时间、地点、组织方、面向对象、截止时间、联系方式」逐项提取，缺失字段填「未提及」；`use_few_shot=True` 时插入两组示例问答（共 6 条消息），否则只有 system + user 两条。
   - 总结与提取的提示词都用 `<待处理文本>` 标签包裹用户输入；提取提示词还声明标签内的内容不视为系统指令，用于降低提示词注入风险。
-- `app/ai/client.py`：用 `lru_cache(maxsize=1)` 复用 `AsyncOpenAI` 客户端，`base_url` 指向 DeepSeek 的 OpenAI 兼容接口，超时读取 `LLM_TIMEOUT`，`max_retries=2`；`generate_answer(messages, temperature=None)` 调用 `chat.completions.create()`，校验 `choices` 与回答内容非空后，返回去除首尾空白的文本。传入 `temperature` 时校验范围 0–2，并通过 `extra_body` 关闭 DeepSeek 的 thinking 模式。
-- `app/services/ai_service.py`：`chat_with_ai()` / `summarize_text()` / `extract_key_info()` 分别构造消息后调用 `generate_answer()`；总结与提取固定 `temperature=0.2`，问答使用模型默认值。
-- `app/api/ai.py`：三个接口共用 `_run_ai_task()`，将大模型异常统一映射为 HTTP 错误。
+- `app/ai/client.py`：用 `lru_cache(maxsize=1)` 复用 `AsyncOpenAI` 客户端，`base_url` 指向 DeepSeek 的 OpenAI 兼容接口，超时读取 `LLM_TIMEOUT`，`max_retries=2`；`generate_answer(messages, temperature=None)` 调用 `chat.completions.create()`，校验 `choices` 与回答内容非空后，返回去除首尾空白的文本。传入 `temperature` 时校验范围 0–2，并通过 `extra_body` 关闭 DeepSeek 的 thinking 模式。`stream_answer(messages)` 以 `stream=True` 调用同一接口，逐段 `yield` 增量文本，跳过空 chunk，同样关闭 thinking 模式，并在 `finally` 中关闭流。
+- `app/services/ai_service.py`：`chat_with_ai()` / `summarize_text()` / `extract_key_info()` 分别构造消息后调用 `generate_answer()`；总结与提取固定 `temperature=0.2`，问答使用模型默认值；`stream_chat_with_ai()` 复用问答消息构造，异步迭代 `stream_answer()`。
+- `app/api/ai.py`：三个非流式接口共用 `_run_ai_task()`，将大模型异常统一映射为 HTTP 错误；流式接口在生成器内把异常转换为 `error` 事件（见下节）。
 
 ### 3. 接口
 
@@ -333,10 +335,41 @@ LLM_TIMEOUT=60
 | `POST /ai/chat` | `{"message": "..."}` | 问答，`message` 1–4000 字符 |
 | `POST /ai/summarize` | `{"text": "..."}` | 文本总结，`text` 1–8000 字符 |
 | `POST /ai/extract` | `{"text": "...", "use_few_shot": false}` | 信息提取，`use_few_shot` 默认 `false` |
+| `POST /ai/chat/stream` | `{"message": "..."}` | 流式问答（SSE），事件格式见下节 |
 
-文本字段都会去除首尾空白，纯空白内容返回 422。三个接口的成功响应统一为 `{"answer": "...", "model": "deepseek-flash"}`。
+文本字段都会去除首尾空白，纯空白内容返回 422。三个非流式接口的成功响应统一为 `{"answer": "...", "model": "deepseek-flash"}`。
 
-### 4. 错误映射
+### 4. 流式问答（SSE）
+
+`POST /ai/chat/stream` 使用 FastAPI 内置的 `EventSourceResponse` 返回 `text/event-stream`，请求体与 `/ai/chat` 相同（`ChatRequest`）。
+
+服务端通过三类事件推送结果：
+
+| event | data | 说明 |
+| --- | --- | --- |
+| `delta` | `{"type": "delta", "content": "..."}` | 模型输出的增量文本，可能连续多次 |
+| `done` | `{"type": "done"}` | 正常结束标记 |
+| `error` | `{"type": "error", "message": "..."}` | 模型异常，`message` 为错误说明 |
+
+实际传输格式示例：
+
+```text
+event: delta
+data: {"type":"delta","content":"FastAPI 是一个"}
+
+event: delta
+data: {"type":"delta","content":"现代 Python Web 框架。"}
+
+event: done
+data: {"type":"done"}
+```
+
+- 每段输出前都会检查 `request.is_disconnected()`，客户端断开后停止生成；此时不会发送 `done`。
+- 流式接口的模型异常（限流、超时、连接失败、服务端错误、未配置 `DEEPSEEK_API_KEY`）不会返回 502 / 503 / 504——响应头在开始推送时已发出，HTTP 状态固定为 200，错误只体现在 `error` 事件里。请求体校验失败仍会在开始推送前返回 422。
+- 流式问答使用模型默认 temperature，并关闭 DeepSeek 的 thinking 模式。
+- 浏览器原生 `EventSource` 只支持 GET，请求该 POST 接口需使用 `fetch()` 读取响应流。
+
+### 5. 错误映射
 
 | 状态码 | 场景 |
 | --- | --- |
@@ -344,6 +377,8 @@ LLM_TIMEOUT=60
 | 502 | API Key 认证失败、无法连接大模型服务、大模型返回错误状态码 |
 | 503 | 未配置 `DEEPSEEK_API_KEY`、模型返回空回答，或请求受限 / 账户额度不足 |
 | 504 | 请求大模型超时（默认 60 秒） |
+
+> **注意**：上表适用于 `/ai/chat`、`/ai/summarize`、`/ai/extract`。`/ai/chat/stream` 在响应开始后无法再修改状态码，模型异常统一以 `error` 事件发送。
 
 > **提示**：`app/ai/prompt_experiment.py` 会依次用 temperature 0.2 / 0.7 / 1.2 调用同一问题，对比输出差异，在项目根目录运行 `python -m app.ai.prompt_experiment`。`app/ai/llm_test.py` 是独立的同步调用练习脚本，在项目根目录运行 `python app/ai/llm_test.py` 可在终端交互测试 DeepSeek。两者都不参与应用运行。
 
@@ -497,6 +532,7 @@ Authorization: Bearer <access_token>
 | POST | `/ai/chat` | AI 问答（DeepSeek） | 否 |
 | POST | `/ai/summarize` | AI 文本总结（DeepSeek） | 否 |
 | POST | `/ai/extract` | AI 信息提取（DeepSeek，可切换少样本） | 否 |
+| POST | `/ai/chat/stream` | AI 流式问答（SSE） | 否 |
 | POST | `/cache/test/{key}` | 写入缓存（TTL 60 秒） | 否 |
 | GET | `/cache/test/{key}` | 读取缓存 | 否 |
 | GET | `/cache/test/{key}/ttl` | 查看剩余 TTL | 否 |
@@ -540,6 +576,11 @@ curl http://127.0.0.1:8000/external/github/torvalds
 
 # AI 问答：需要 .env 中配置 DEEPSEEK_API_KEY
 curl -X POST http://127.0.0.1:8000/ai/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"用一句话解释什么是 FastAPI"}'
+
+# 流式问答：-N 关闭 curl 缓冲，逐条打印 SSE 事件
+curl -N -X POST http://127.0.0.1:8000/ai/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"message":"用一句话解释什么是 FastAPI"}'
 
@@ -623,7 +664,7 @@ pytest tests/test_auth.py -v
 
 > **提示**：`GET /users/{user_id}` 与 `/cache/*` 依赖真实 Redis；目前没有专门覆盖缓存命中 / 失效的 pytest 用例。
 
-> **提示**：`tests/test_ai_prompts.py` 只测试消息构造，不会调用真实模型；`/ai/*` 接口本身未编写自动化测试，现有 pytest 用例不依赖 `DEEPSEEK_API_KEY`（应用启动不要求该变量）。
+> **提示**：`tests/test_ai_prompts.py` 只测试消息构造，不会调用真实模型；`/ai/*` 接口本身（包括 `/ai/chat/stream` 流式接口）未编写自动化测试，现有 pytest 用例不依赖 `DEEPSEEK_API_KEY`（应用启动不要求该变量）。
 
 > **提示**：`reset_database` 只重建测试数据库，**不会清理 Redis**。若用例涉及已缓存的用户，需手动删除对应 key，否则可能读到上一条用例留下的数据。
 
@@ -770,6 +811,15 @@ pytest tests/test_auth.py -v
 - **错误映射**：抽取统一异常处理 `_run_ai_task()`，新增 `RateLimitError` → 503（请求受限或账户额度不足）。
 - **实验脚本**：`app/ai/prompt_experiment.py` 用 temperature 0.2 / 0.7 / 1.2 调用同一问题并对比输出，不参与应用运行。
 - **测试**：`tests/test_ai_prompts.py` 覆盖三种消息构造函数以及零样本 / 少样本分支，只校验消息结构，不调用真实模型。
+
+### Day 14：SSE 流式输出
+
+- **流式客户端**：`app/ai/client.py` 新增 `stream_answer()`，以 `stream=True` 调用 `chat.completions.create()`，逐段 `yield` 增量文本，跳过空 chunk，关闭 thinking 模式，并在 `finally` 中关闭流。
+- **业务层**：`app/services/ai_service.py` 新增 `stream_chat_with_ai()`，复用 `build_chat_messages()` 后异步迭代 `stream_answer()`。
+- **接口**：新增 `POST /ai/chat/stream`，请求体复用 `ChatRequest`，通过 FastAPI 内置 `EventSourceResponse` 返回 `text/event-stream`。
+- **事件协议**：增量内容为 `delta` 事件，data 为 `{"type": "delta", "content": "..."}`；正常结束发送 `done`；异常发送 `error`。
+- **断连处理**：每段输出前检查 `request.is_disconnected()`，客户端断开后停止生成，且不发送 `done`。
+- **错误处理**：流式响应开始后无法修改 HTTP 状态码，限流 / 超时 / 连接失败 / 服务端错误 / 未配置 Key 统一转换为 `error` 事件；请求体校验仍在推送前返回 422。
 
 ## 更新依赖
 
