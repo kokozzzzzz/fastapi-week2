@@ -1,4 +1,10 @@
-from fastapi import APIRouter,HTTPException
+from fastapi import (
+    APIRouter,
+    HTTPException,
+    Request
+)
+
+from fastapi.sse import EventSourceResponse,ServerSentEvent
 
 from openai import(
     APIConnectionError,
@@ -19,9 +25,10 @@ from app.services.ai_service import (
     chat_with_ai,
     summarize_text,
     extract_key_info,
+    stream_chat_with_ai
 )
 
-from collections.abc import Awaitable
+from collections.abc import Awaitable,AsyncIterator
 
 
 router = APIRouter(
@@ -65,6 +72,7 @@ async def _run_ai_task(task: Awaitable[str]) -> str:
         ) from e
 
 
+# chat
 @router.post(
     "/chat",
     response_model=ChatResponse
@@ -77,6 +85,85 @@ async def chat(data: ChatRequest):
         model=setting.llm_model,
     )
 
+
+# 流式chat
+@router.post(
+    "/chat/stream",
+    response_class=EventSourceResponse,
+)
+async def chat_stream(
+    data: ChatRequest,
+    request: Request
+) -> AsyncIterator[ServerSentEvent]:
+
+    try:
+        async for delta in stream_chat_with_ai(data.message):
+            # 检查客户端是否已经断开连接
+            if await request.is_disconnected():
+                break
+
+            yield ServerSentEvent(
+                event="delta",
+                data={
+                    "type": "delta",
+                    "content": delta,
+                },
+            )
+        else:
+            # 正常结束时发送完成事件
+            yield ServerSentEvent(
+                event="done",
+                data={
+                    "type": "done",
+                },
+            )
+
+    except RateLimitError:
+        yield ServerSentEvent(
+            event="error",
+            data={
+                "type":"error",
+                "message":"模型请求受限或账户额度不足。"
+            }
+        )
+    except APITimeoutError:
+        yield ServerSentEvent(
+            event="error",
+            data={
+                "type": "error",
+                "message": "大模型请求超时。",
+            },
+        )
+
+    except APIConnectionError:
+        yield ServerSentEvent(
+            event="error",
+            data={
+                "type": "error",
+                "message": "无法连接大模型服务。",
+            },
+        )
+
+    except APIStatusError as exc:
+        yield ServerSentEvent(
+            event="error",
+            data={
+                "type": "error",
+                "message": f"模型服务错误：{exc.status_code}",
+            },
+        )
+
+    except RuntimeError as exc:
+        yield ServerSentEvent(
+            event="error",
+            data={
+                "type": "error",
+                "message": str(exc),
+            },
+        )
+
+
+# summaize部分
 @router.post(
     "/summarize",
     response_model=ChatResponse
@@ -89,6 +176,8 @@ async def summarize(data: TextRequest):
         model=setting.llm_model,
     )
 
+
+# 0样例和少样例
 @router.post(
     "/extract",
     response_model=ChatResponse,

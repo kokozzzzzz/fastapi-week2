@@ -1,4 +1,4 @@
-from app.ai.client import generate_answer
+from app.ai.client import generate_answer,stream_answer
 from app.ai.prompts import (
     build_chat_messages,
     build_extract_messages,
@@ -15,6 +15,19 @@ async def chat_with_ai(message: str) -> str:
 
     answer = await generate_answer(messages)
     return answer
+
+
+async def stream_chat_with_ai(message: str):
+    """
+    流式AI聊天业务逻辑
+    """
+
+    messages = build_chat_messages(message)
+
+    async for chunk in stream_answer(messages):
+        yield chunk
+
+
 
 
 async def summarize_text(text: str) -> str:
@@ -41,3 +54,6 @@ async def extract_key_info(
 
     answer = await generate_answer(messages,temperature=0.2)
     return answer
+
+
+

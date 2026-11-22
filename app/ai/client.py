@@ -4,6 +4,8 @@ from functools import lru_cache
 
 from app.core.config import setting
 
+from collections.abc import AsyncIterator
+
 
 @lru_cache(maxsize=1)
 def get_llm_client() -> AsyncOpenAI:
@@ -68,4 +70,36 @@ async def generate_answer(
     return content.strip()
 
 
+async def stream_answer(
+    messages: list[dict[str,str]]
+) -> AsyncIterator[str]:
+    '''
+    流式调用大模型，逐段返回回答文本。
+    '''
+
+    client = get_llm_client()
+
+    stream = await client.chat.completions.create(
+        model=setting.llm_model,
+        messages=messages,
+        stream=True,
+        extra_body={
+            "thinking": {
+                "type": "disabled"
+            }
+        }
+    )
+
+    try:
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+
+            content = chunk.choices[0].delta.content
+
+            if content:
+                yield content
+
+    finally:
+        await stream.close()
 
