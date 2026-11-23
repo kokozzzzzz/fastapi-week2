@@ -10,7 +10,9 @@ from app.api.health import (
 )
 from app.db.base import Base
 from app.db.session import engine
+
 from app.models import user  # noqa
+from app.models.conversation import Conversation, ChatMessage # noqa
 
 from app.api.auth import router as auth_router
 
@@ -21,6 +23,8 @@ from app.api.files import router as files_router
 from app.api.cache import router as cache_router
 
 from app.api.ai import router as ai_router
+
+from app.api.conversations import router as conversations_router
 
 Base.metadata.create_all(bind=engine)
 
@@ -41,13 +45,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+# 计算运行时间的中间件
 app.middleware("http")(log_request_time)
 
 #app.middleware("http")(add_process_time)
-
-# 用户router
-app.include_router(users_router)
 
 
 @app.get("/")
@@ -56,7 +57,10 @@ def root():
         "message": "FastAPI is running"
     }
 
+# 用户router
+app.include_router(users_router)
 
+# 额外测试router
 app.include_router(health_router)
 
 # 登录注册router
@@ -74,3 +78,5 @@ app.include_router(cache_router)
 # AI router
 app.include_router(ai_router)
 
+# AI 会话router
+app.include_router(conversations_router)

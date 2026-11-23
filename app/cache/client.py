@@ -11,6 +11,7 @@ redis_client = redis.Redis(
     decode_responses=True,
 )
 
-
+async def get_redis() -> redis.Redis:
+    return redis_client
 
 

@@ -1,6 +1,6 @@
 # FastAPI Week 2
 
-一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存、Docker 容器化与 Docker Compose 编排，以及基于 DeepSeek 的 AI 问答、文本总结与信息提取接口（提示词模板化，支持少样本，问答支持 SSE 流式输出），最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
+一个用于系统学习 FastAPI 的后端练习项目。项目从基础路由开始，逐步覆盖 Pydantic 数据校验、分层架构、MySQL 持久化、JWT 用户认证、文件上传、外部 API 调用、pytest 接口测试、Redis 缓存、Docker 容器化与 Docker Compose 编排，以及基于 DeepSeek 的 AI 问答、文本总结与信息提取接口（提示词模板化，支持少样本，问答支持 SSE 流式输出）；并在其之上实现多轮会话持久化、上下文管理与用户会话隔离，最终形成一个结构清晰、可运行、可测试的 FastAPI 应用。
 
 - 主应用入口：`app/main.py`
 - 交互式接口文档：<http://127.0.0.1:8000/docs>
@@ -34,6 +34,7 @@
 - **用户详情缓存**：`GET /users/{user_id}` 采用 Cache-Aside，key 为 `user:{user_id}`，TTL 由 `USER_CACHE_TTL` 控制（默认 60 秒）；响应头 `X-Cache` 标记 `HIT` / `MISS`，更新或删除用户时自动使缓存失效。
 - **AI 能力**：`POST /ai/chat` 问答、`POST /ai/summarize` 文本总结、`POST /ai/extract` 信息提取，统一通过 OpenAI SDK 异步调用 DeepSeek，返回回答文本与模型名；提示词集中在 `app/ai/prompts.py`，提取接口可切换零样本 / 少样本；未配置 API Key 或请求受限返回 503，请求超时返回 504，认证 / 连接 / 服务端错误返回 502。
 - **流式问答（SSE）**：`POST /ai/chat/stream` 通过 Server-Sent Events 逐段推送回答，`delta` 事件携带增量文本，正常结束发送 `done`，异常发送 `error`；客户端断开后停止生成。
+- **多轮会话**：会话与消息持久化到 MySQL（`conversations` / `chat_messages`）；支持创建会话、会话列表与历史消息恢复；会话内对话自动拼接最近历史作为上下文，Redis 缓存每个会话最近 20 条消息（key 为 `chat:conversation:{id}`，TTL 24 小时），缓存缺失时从 MySQL 回填；所有会话接口都按当前用户校验归属，越权访问统一返回 404。
 - **基础设施**：健康检查、请求耗时中间件（响应头 `X-Process-Time`）、CORS（允许 Vite 开发服务器跨域）。
 - **自动化测试**：pytest + TestClient，使用独立测试数据库，覆盖认证、用户、文件上传、健康检查与提示词消息构造。
 
@@ -52,11 +53,13 @@ FastAPI-week2/
 │   │   ├── ai.py                 # /ai 问答、文本总结、信息提取与 SSE 流式问答
 │   │   ├── auth.py               # /auth 注册、登录、当前用户
 │   │   ├── cache.py              # /cache 缓存读写与 Cache-Aside 演示
+│   │   ├── conversations.py      # /ai/conversations 会话创建、列表、历史与流式对话
 │   │   ├── external.py           # /external 调用 GitHub API
 │   │   ├── files.py              # /files 文件上传
 │   │   ├── health.py             # /health/ 健康检查
 │   │   └── users.py              # /users 用户相关接口（整体需要登录，详情接口带缓存）
 │   ├── cache/                    # 缓存层
+│   │   ├── chat_cache.py         # 会话消息缓存：读取 / 追加 / 清理（key = chat:conversation:{id}）
 │   │   ├── client.py             # 全局 redis.asyncio 客户端
 │   │   └── user_cache.py         # 用户详情缓存：读取 / 写入 / 删除（key = user:{id}）
 │   ├── core/                     # 基础设施层
@@ -68,14 +71,18 @@ FastAPI-week2/
 │   │   ├── base.py               # 声明基类 Base
 │   │   └── session.py            # engine / SessionLocal / get_db 依赖
 │   ├── models/
+│   │   ├── conversation.py       # Conversation / ChatMessage ORM 模型，映射 conversations / chat_messages 表
 │   │   └── user.py               # User ORM 模型（含 password_hash），映射 users 表
 │   ├── schemas/
-│   │   ├── ai.py                 # ChatRequest / ChatResponse / TextRequest / ExtractRequest
+│   │   ├── ai.py                 # ChatRequest / ChatResponse / TextRequest / ExtractRequest，以及会话与消息模型
 │   │   ├── auth.py               # 登录 / Token 响应模型
 │   │   └── user.py               # UserCreate / UserUpdate / UserResponse
 │   └── services/                 # 业务逻辑层
 │       ├── ai_service.py         # AI 业务：构造消息并调用大模型（chat / stream chat / summarize / extract）
 │       ├── auth_service.py       # 注册与登录校验
+│       ├── context_service.py    # 会话上下文组装：Redis 优先、MySQL 回填、字符预算裁剪
+│       ├── conversation_chat_service.py  # 会话内对话：拼接上下文、流式生成、落库与写缓存
+│       ├── conversation_service.py       # 会话与消息的数据库读写
 │       └── user_service.py       # 用户增删改查
 │
 ├── tests/                        # pytest 自动化测试
@@ -100,7 +107,7 @@ FastAPI-week2/
 └── README.md
 ```
 
-> **说明**：`app/db/` 与 `app/models/` 没有放置 `__init__.py`，依赖 Python 的命名空间包机制导入，目前可以正常工作；若想与其余目录保持一致，补两个空文件即可。
+> **说明**：`app/db/` 没有放置 `__init__.py`，依赖 Python 的命名空间包机制导入，目前可以正常工作；`app/models/` 已补充空的 `__init__.py`。
 
 ## 环境配置
 
@@ -382,6 +389,58 @@ data: {"type":"done"}
 
 > **提示**：`app/ai/prompt_experiment.py` 会依次用 temperature 0.2 / 0.7 / 1.2 调用同一问题，对比输出差异，在项目根目录运行 `python -m app.ai.prompt_experiment`。`app/ai/llm_test.py` 是独立的同步调用练习脚本，在项目根目录运行 `python app/ai/llm_test.py` 可在终端交互测试 DeepSeek。两者都不参与应用运行。
 
+## 多轮会话（持久化、上下文与隔离）
+
+### 1. 数据模型
+
+| 表 | 字段 | 说明 |
+| --- | --- | --- |
+| `conversations` | `id` / `user_id` / `title` / `created_at` / `updated_at` | 会话归属用户；`title` 默认「新对话」，最长 200 字符 |
+| `chat_messages` | `id` / `conversation_id` / `role` / `content` / `created_at` | `role` 为 `user` / `assistant`；外键 `ondelete="CASCADE"` |
+
+ORM 模型位于 `app/models/conversation.py`，随 `app/main.py` 中的 `Base.metadata.create_all()` 在启动时自动建表。
+
+### 2. 上下文构建
+
+`app/services/context_service.py` 的 `build_conversation_messages()` 负责拼装每次请求的 messages：
+
+1. 优先读取 Redis 列表 `chat:conversation:{conversation_id}`（保留最近 20 条，TTL 24 小时）；
+2. 缓存为空时从 MySQL 取最近 20 条消息，按时间正序写回 Redis；
+3. 历史前插入 `CHAT_SYSTEM_PROMPT`，末尾追加本次用户问题；
+4. `trim_history_by_chars()` 从最新消息往前累加，历史总字符数不超过 12000（`MAX_HISTORY_CHARS`），避免上下文无限增长。
+
+Redis key 与 MySQL 查询条件都带 `conversation_id`，不同会话的上下文天然隔离。
+
+### 3. 接口
+
+| Endpoint | 请求体 | 说明 |
+| --- | --- | --- |
+| `POST /ai/conversations` | `{"title": "..."}`（可省略） | 创建会话，返回 `{"id": ..., "title": "..."}` |
+| `GET /ai/conversations` | — | 当前用户的会话列表，按 `updated_at` 倒序 |
+| `GET /ai/conversations/{conversation_id}/messages` | — | 会话历史消息，按 `id` 升序 |
+| `POST /ai/conversations/{conversation_id}/chat/stream` | `{"message": "..."}` | 会话内流式对话（SSE），`message` 1–8000 字符 |
+
+以上接口全部需要登录（`Authorization: Bearer <token>`）。
+
+### 4. 流式会话流程
+
+事件协议与 `/ai/chat/stream` 一致：`delta` / `done` / `error`。一轮对话的流程：
+
+1. 校验会话存在且 `user_id` 等于当前用户，否则返回 404 `{"detail": "会话不存在或无权访问"}`；
+2. 拼装上下文后立即把 user 消息写入 MySQL 与 Redis（流式传输中断也能保留提问）；
+3. 逐段推送 `delta` 事件；
+4. 正常结束后把完整的 assistant 回答写入 MySQL 与 Redis，并发送 `done`。
+
+流式响应开始后 HTTP 状态码固定为 200，模型或缓存异常以 `error` 事件返回。
+
+### 5. 权限与隔离
+
+- 会话列表只查询当前用户；历史消息与流式对话在 SQL 中同时过滤 `id` 与 `user_id`。
+- 访问他人的会话 ID 统一返回 **404** 而不是 403，避免泄露会话是否存在。
+- `user_id` 只取自 JWT，不接受客户端传入，无法伪造会话归属。
+
+> **已知限制**：发送消息不会更新 `conversations.updated_at`，会话列表排序反映的是创建时间，而不是最后聊天时间。
+
 ## 运行方式
 
 在**项目根目录**启动主应用：
@@ -533,6 +592,10 @@ Authorization: Bearer <access_token>
 | POST | `/ai/summarize` | AI 文本总结（DeepSeek） | 否 |
 | POST | `/ai/extract` | AI 信息提取（DeepSeek，可切换少样本） | 否 |
 | POST | `/ai/chat/stream` | AI 流式问答（SSE） | 否 |
+| POST | `/ai/conversations` | 创建会话 | 是 |
+| GET | `/ai/conversations` | 当前用户的会话列表 | 是 |
+| GET | `/ai/conversations/{conversation_id}/messages` | 会话历史消息 | 是 |
+| POST | `/ai/conversations/{conversation_id}/chat/stream` | 会话内流式对话（SSE） | 是 |
 | POST | `/cache/test/{key}` | 写入缓存（TTL 60 秒） | 否 |
 | GET | `/cache/test/{key}` | 读取缓存 | 否 |
 | GET | `/cache/test/{key}/ttl` | 查看剩余 TTL | 否 |
@@ -584,6 +647,26 @@ curl -N -X POST http://127.0.0.1:8000/ai/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"message":"用一句话解释什么是 FastAPI"}'
 
+# 创建会话：返回 {"id": 1, "title": "Python学习"}，id 以实际为准
+curl -X POST http://127.0.0.1:8000/ai/conversations \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Python学习"}'
+
+# 会话列表：只返回当前用户的会话
+curl http://127.0.0.1:8000/ai/conversations \
+  -H "Authorization: Bearer <access_token>"
+
+# 会话历史：按 id 升序返回 user / assistant 消息
+curl http://127.0.0.1:8000/ai/conversations/1/messages \
+  -H "Authorization: Bearer <access_token>"
+
+# 会话内流式对话：自动携带该会话的历史上下文
+curl -N -X POST http://127.0.0.1:8000/ai/conversations/1/chat/stream \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"我正在学习Python，目前已经掌握基础语法。"}'
+
 # 文本总结：按「一句话概括 / 主要内容 / 关键数据」输出
 curl -X POST http://127.0.0.1:8000/ai/summarize \
   -H "Content-Type: application/json" \
@@ -614,7 +697,7 @@ curl http://127.0.0.1:8000/cache/demo
 | 204 | 删除成功 |
 | 400 | 用户名已存在、文件格式不支持 |
 | 401 | 未登录、Token 无效 / 过期、账号或密码错误 |
-| 404 | 用户不存在、GitHub 用户不存在 |
+| 404 | 用户不存在、GitHub 用户不存在、会话不存在或无权访问 |
 | 413 | 上传文件超过 5MB |
 | 422 | 请求参数 / 请求体校验失败 |
 | 500 | 访问 `/cache/*` 或 `GET /users/{user_id}` 时 Redis 未启动或连接失败 |
@@ -665,6 +748,8 @@ pytest tests/test_auth.py -v
 > **提示**：`GET /users/{user_id}` 与 `/cache/*` 依赖真实 Redis；目前没有专门覆盖缓存命中 / 失效的 pytest 用例。
 
 > **提示**：`tests/test_ai_prompts.py` 只测试消息构造，不会调用真实模型；`/ai/*` 接口本身（包括 `/ai/chat/stream` 流式接口）未编写自动化测试，现有 pytest 用例不依赖 `DEEPSEEK_API_KEY`（应用启动不要求该变量）。
+
+> **提示**：多轮会话接口目前没有 pytest 自动化用例，需结合 MySQL 与 Redis 手动验证：创建会话 → 多轮流式对话 → 检查 `chat_messages` 与 `chat:conversation:{id}` 缓存 → 用另一个用户的 token 验证越权返回 404。
 
 > **提示**：`reset_database` 只重建测试数据库，**不会清理 Redis**。若用例涉及已缓存的用户，需手动删除对应 key，否则可能读到上一条用例留下的数据。
 
@@ -820,6 +905,20 @@ pytest tests/test_auth.py -v
 - **事件协议**：增量内容为 `delta` 事件，data 为 `{"type": "delta", "content": "..."}`；正常结束发送 `done`；异常发送 `error`。
 - **断连处理**：每段输出前检查 `request.is_disconnected()`，客户端断开后停止生成，且不发送 `done`。
 - **错误处理**：流式响应开始后无法修改 HTTP 状态码，限流 / 超时 / 连接失败 / 服务端错误 / 未配置 Key 统一转换为 `error` 事件；请求体校验仍在推送前返回 422。
+
+### Day 15：多轮会话（持久化、上下文与用户隔离）
+
+- **数据模型**：新增 `app/models/conversation.py`，定义 `Conversation`（`conversations`）与 `ChatMessage`（`chat_messages`）两张表；消息表外键关联会话，配置 `cascade="all, delete-orphan"` 与 `ondelete="CASCADE"`，删除会话时级联删除消息。
+- **Schema**：`app/schemas/ai.py` 新增 `ConversationCreate`（`title`，1–200，默认「新对话」）、`ConversationResponse`（`id` / `title`）、`MessageResponse`（`id` / `role` / `content` / `created_at`）与 `ConversationChatRequest`（`message`，1–8000）。
+- **服务层**：`conversation_service.py` 提供会话创建、用户会话列表、最近消息查询与消息保存；`context_service.py` 负责上下文拼装；`conversation_chat_service.py` 串联「构建上下文 → 保存提问 → 流式生成 → 保存回答」。
+- **Redis 会话缓存**：`app/cache/chat_cache.py` 用 Redis list 缓存每个会话最近 20 条消息，key 为 `chat:conversation:{conversation_id}`，TTL 24 小时；新消息通过 pipeline 执行 `rpush` + `ltrim` + `expire`。
+- **缓存回填**：缓存为空时从 MySQL 读取最近 20 条并按时间正序写回 Redis，之后同一会话优先走缓存。
+- **Token 预算**：`trim_history_by_chars()` 按 12000 字符上限从最新历史往前裁剪，避免上下文持续膨胀。
+- **接口**：新增 `POST /ai/conversations`、`GET /ai/conversations`、`GET /ai/conversations/{id}/messages` 与 `POST /ai/conversations/{id}/chat/stream`，全部要求登录。
+- **流式会话**：复用 `stream_answer()`；先保存用户消息再推送，流式中断也保留提问；结束后保存完整回答；事件协议与 `/ai/chat/stream` 一致（`delta` / `done` / `error`）。
+- **用户隔离**：历史消息与流式对话在 SQL 中同时按 `conversation_id` 与 `current_user.id` 过滤，越权访问统一返回 404「会话不存在或无权访问」。
+- **修复**：流式路由路径参数拼写错误（`{conversion_id}` → `{conversation_id}`），否则请求会因缺少 query 参数返回 422；`get_cached_messages()` 中 `json.loads` 误传整个 list，修复后第二轮对话才能正确读取缓存历史。
+- **已知限制**：发送消息不会更新 `conversations.updated_at`，会话列表按创建时间而非最后聊天时间排序。
 
 ## 更新依赖
 
